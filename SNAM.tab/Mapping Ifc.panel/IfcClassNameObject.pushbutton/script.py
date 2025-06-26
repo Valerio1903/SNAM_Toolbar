@@ -30,6 +30,7 @@ cat_builtin = List[BuiltInCategory]([
     BuiltInCategory.OST_DuctTerminal, BuiltInCategory.OST_DuctCurves,
     BuiltInCategory.OST_DuctFitting, BuiltInCategory.OST_DuctAccessory,
     BuiltInCategory.OST_DuctInsulations, BuiltInCategory.OST_DuctLinings,
+    BuiltInCategory.OST_ElectricalEquipment,
     BuiltInCategory.OST_FlexDuctCurves, BuiltInCategory.OST_GenericModel,
     BuiltInCategory.OST_PipeCurves, BuiltInCategory.OST_PipeFitting,
     BuiltInCategory.OST_PipeAccessory, BuiltInCategory.OST_PipeInsulations,
