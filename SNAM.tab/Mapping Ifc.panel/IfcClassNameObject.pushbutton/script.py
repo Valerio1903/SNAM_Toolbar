@@ -1,0 +1,161 @@
+# -*- coding: utf-8 -*-
+"""Compilazione parametri ExportAsIfc, ExportTypeIfc, IfcName, IfcObjectType"""
+__title__ = 'Ifc Class\nName Object'
+__author__ = 'Valerio Mascia'
+import clr
+clr.AddReference('RevitAPI')
+clr.AddReference('RevitAPIUI')
+
+from Autodesk.Revit.DB import *
+from Autodesk.Revit.UI import TaskDialog
+import xlrd
+from System.Collections.Generic import List
+
+doc = __revit__.ActiveUIDocument.Document
+
+# Configurazione Excel (convertiti in .xls!)
+IFCNAME_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\IfcName da Allegato 1.xlsx"
+IFCNAME_SHEET = "IfcName"
+PLACE_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\PLACEHOLDER.xlsx"
+PLACE_SHEETS = ["FU", "SE"]
+MAPPER_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\Allegato 3 - Classi e mappatura IFC.xlsx"
+MAPPER_SHEETS = ["Elenco IM", "Elenco SE", "Elenco FU", "Elenco AP", "Elenco NO"]
+
+PARAM_IFCNAME = "IfcName"
+PARAM_OBJTYPE = "IfcObjectType"
+PARAM_EXPORT = BuiltInParameter.IFC_EXPORT_ELEMENT_AS
+PARAM_PREDEF = BuiltInParameter.IFC_EXPORT_PREDEFINEDTYPE
+
+cat_builtin = List[BuiltInCategory]([
+    BuiltInCategory.OST_DuctTerminal, BuiltInCategory.OST_DuctCurves,
+    BuiltInCategory.OST_DuctFitting, BuiltInCategory.OST_DuctAccessory,
+    BuiltInCategory.OST_DuctInsulations, BuiltInCategory.OST_DuctLinings,
+    BuiltInCategory.OST_FlexDuctCurves, BuiltInCategory.OST_GenericModel,
+    BuiltInCategory.OST_PipeCurves, BuiltInCategory.OST_PipeFitting,
+    BuiltInCategory.OST_PipeAccessory, BuiltInCategory.OST_PipeInsulations,
+    BuiltInCategory.OST_FlexPipeCurves, BuiltInCategory.OST_CableTray,
+    BuiltInCategory.OST_CableTrayFitting, BuiltInCategory.OST_Conduit,
+    BuiltInCategory.OST_ConduitFitting
+])
+
+# Funzioni helper (xlrd)
+def load_ifcname_rules(path, sheet):
+    workbook = xlrd.open_workbook(path)
+    worksheet = workbook.sheet_by_name(sheet)
+    rules = []
+    for row_idx in range(1, worksheet.nrows):
+        val_a = str(worksheet.cell(row_idx, 0).value).strip()
+        val_b = str(worksheet.cell(row_idx, 1).value).strip().upper()
+        if val_a:
+            rules.append((val_a, val_b))
+    return rules
+
+def load_placeholder(path, sheets):
+    workbook = xlrd.open_workbook(path)
+    lookup = {}
+    for sh in sheets:
+        worksheet = workbook.sheet_by_name(sh)
+        for row_idx in range(1, worksheet.nrows):
+            val = worksheet.cell(row_idx, 0).value
+            if val:
+                lookup[str(val).strip()[:5].upper()] = str(val).strip()
+    return lookup
+
+def load_mapper_rules(path, sheets):
+    workbook = xlrd.open_workbook(path)
+    rules = {}
+    for sh in sheets:
+        worksheet = workbook.sheet_by_name(sh)
+        for row_idx in range(1, worksheet.nrows):
+            pref = str(worksheet.cell(row_idx, 0).value or "").strip()[:5].upper()
+            obj = str(worksheet.cell(row_idx, 4).value or "").strip()
+            exp = str(worksheet.cell(row_idx, 5).value or "").strip() or obj
+            rules[pref] = (obj, exp)
+    return rules
+
+# Collector elementi Revit
+filter = ElementMulticategoryFilter(cat_builtin)
+collector = FilteredElementCollector(doc)\
+    .WherePasses(filter)\
+    .WhereElementIsNotElementType()\
+    .ToElements()
+
+# Carica regole Excel (xls con xlrd)
+rules_ifcname = load_ifcname_rules(IFCNAME_EXCEL, IFCNAME_SHEET)
+ph_lookup = load_placeholder(PLACE_EXCEL, PLACE_SHEETS)
+map_rules = load_mapper_rules(MAPPER_EXCEL, MAPPER_SHEETS)
+
+# Transazione
+t = Transaction(doc, "Compila parametri IFC")
+t.Start()
+
+for e in collector:
+    sym = doc.GetElement(e.GetTypeId())
+    if not sym:
+        continue
+
+    fam_param = sym.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
+    fam_name = fam_param.AsString() if fam_param else ""
+    type_param = sym.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+    type_name = type_param.AsString() if type_param else ""
+
+    fam_name = fam_name or ""
+    type_name = type_name or ""
+
+    head5_fam = fam_name[:5].upper()
+    head5_type = type_name[:5].upper()
+
+    target_ifcname = None
+
+    # Regola SNAM_
+    if head5_type == "SNAM_":
+        for a, b in rules_ifcname:
+            if b == "BARRE":
+                target_ifcname = a
+                break
+        if target_ifcname:
+            e.LookupParameter(PARAM_IFCNAME).Set(target_ifcname)
+            e.LookupParameter(PARAM_OBJTYPE).Set("IfcFlowSegment")
+            e.get_Parameter(PARAM_EXPORT).Set("IfcPipeSegmentType")
+        continue
+
+    # Regola NO025
+    if head5_fam == "NO025":
+        p_pre = e.get_Parameter(PARAM_PREDEF)
+        if p_pre and not p_pre.IsReadOnly:
+            p_pre.Set("BEND")
+        target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
+
+    # Regole AP330/AP450
+    elif fam_name.startswith(("AP330", "AP450")):
+        matches = [a for a, _ in rules_ifcname if fam_name.startswith(a)]
+        if matches:
+            target_ifcname = max(matches, key=len)
+
+    # Regole FU/SE
+    elif head5_fam in ph_lookup:
+        target_ifcname = ph_lookup[head5_fam]
+
+    # Regola standard Allegato1
+    else:
+        target_ifcname = next((a for a, b in rules_ifcname if b == head5_fam), None)
+
+    if target_ifcname:
+        p_ifc = e.LookupParameter(PARAM_IFCNAME)
+        if p_ifc and not p_ifc.IsReadOnly:
+            p_ifc.Set(target_ifcname)
+
+    # Mapping Allegato3
+    obj_exp = map_rules.get(head5_fam)
+    if obj_exp:
+        obj, exp = obj_exp
+        p_obj = e.LookupParameter(PARAM_OBJTYPE)
+        p_exp = e.get_Parameter(PARAM_EXPORT)
+        if p_obj and not p_obj.IsReadOnly:
+            p_obj.Set(obj)
+        if p_exp and not p_exp.IsReadOnly:
+            p_exp.Set(exp)
+
+t.Commit()
+
+TaskDialog.Show("IFC Mapping", "Tutti i parametri IFC compilati correttamente.")
