@@ -36,7 +36,7 @@ cat_builtin = List[BuiltInCategory]([
     BuiltInCategory.OST_PipeAccessory, BuiltInCategory.OST_PipeInsulations,
     BuiltInCategory.OST_FlexPipeCurves, BuiltInCategory.OST_CableTray,
     BuiltInCategory.OST_CableTrayFitting, BuiltInCategory.OST_Conduit,
-    BuiltInCategory.OST_ConduitFitting
+    BuiltInCategory.OST_ConduitFitting,BuiltInCategory.OST_MechanicalEquipment
 ])
 
 # Funzioni helper (xlrd)
