@@ -5,20 +5,38 @@ __author__ = 'Valerio Mascia'
 import clr
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
+clr.AddReference('System.Windows.Forms')
 
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 import xlrd
 from System.Collections.Generic import List
+from System.Windows.Forms import OpenFileDialog
+import System
 
+# Funzione per selezionare un file Excel
+def scegli_file_excel(titolo):
+    dialog = OpenFileDialog()
+    dialog.Title = titolo
+    dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
+    dialog.Multiselect = False
+    if dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK:
+        return dialog.FileName
+    else:
+        TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
+        raise SystemExit
+
+# Documento corrente
 doc = __revit__.ActiveUIDocument.Document
 
-# Configurazione Excel (convertiti in .xls!)
-IFCNAME_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\IfcName da Allegato 1.xlsx"
+# === Selezione file Excel ===
+IFCNAME_EXCEL = scegli_file_excel("Seleziona il file IfcName (Allegato 1)")
+PLACE_EXCEL = scegli_file_excel("Seleziona il file PLACEHOLDER")
+MAPPER_EXCEL = scegli_file_excel("Seleziona il file Allegato 3 - Mappatura")
+
+# === Configurazione ===
 IFCNAME_SHEET = "IfcName"
-PLACE_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\PLACEHOLDER.xlsx"
 PLACE_SHEETS = ["FU", "SE"]
-MAPPER_EXCEL = r"\\192.168.80.25\2Dto6D\66. TopoGeo\L0.WIP\S0.03_Resources\S0.03.03_Script\Allegato 3 - Classi e mappatura IFC.xlsx"
 MAPPER_SHEETS = ["Elenco IM", "Elenco SE", "Elenco FU", "Elenco AP", "Elenco NO"]
 
 PARAM_IFCNAME = "IfcName"
@@ -109,7 +127,7 @@ for e in collector:
     target_ifcname = None
 
     # Regola SNAM_
-    if head5_type == "SNAM_":
+    if head5_type == "SNAM_" or head5_type == "Tubaz":
         for a, b in rules_ifcname:
             if b == "BARRE":
                 target_ifcname = a
@@ -127,13 +145,13 @@ for e in collector:
             p_pre.Set("BEND")
         target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
 
-        VALID_PATTERNS = ["con_comando_manuale_con_riduttore", "con_comando_manuale_a_leva"]
     # Regole AP330/AP450
-    elif fam_name.startswith(("AP330", "AP450")):
-        if any(pat in fam_name for pat in VALID_PATTERNS):
-            matches = [a for a, _ in rules_ifcname if fam_name.startswith(a.strip())]
-            if matches:
-                target_ifcname = max(matches, key=len)
+    elif fam_name.startswith(("AP330", "AP450")) and (
+        "con_comando_manuale_con_riduttore" in fam_name or
+        "con_comando_manuale_a_leva" in fam_name):
+        matches = [a for a, _ in rules_ifcname if a.strip() in fam_name]
+        if matches:
+            target_ifcname = max(matches, key=len)
 
     # Regole FU/SE
     elif head5_fam in ph_lookup:
