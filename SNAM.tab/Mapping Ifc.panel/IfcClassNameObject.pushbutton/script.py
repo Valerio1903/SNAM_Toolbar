@@ -127,7 +127,7 @@ for e in collector:
     target_ifcname = None
 
     # Regola SNAM_
-    if head5_type == "SNAM_" or head5_type == "Tubaz":
+    if head5_type.startswith("SNAM") or head5_type.startswith("Tubaz") :
         for a, b in rules_ifcname:
             if b == "BARRE":
                 target_ifcname = a
