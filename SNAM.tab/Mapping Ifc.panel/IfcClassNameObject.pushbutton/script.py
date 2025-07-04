@@ -127,11 +127,13 @@ for e in collector:
             p_pre.Set("BEND")
         target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
 
+        VALID_PATTERNS = ["con_comando_manuale_con_riduttore", "con_comando_manuale_a_leva"]
     # Regole AP330/AP450
     elif fam_name.startswith(("AP330", "AP450")):
-        matches = [a for a, _ in rules_ifcname if fam_name.startswith(a)]
-        if matches:
-            target_ifcname = max(matches, key=len)
+        if any(pat in fam_name for pat in VALID_PATTERNS):
+            matches = [a for a, _ in rules_ifcname if fam_name.startswith(a.strip())]
+            if matches:
+                target_ifcname = max(matches, key=len)
 
     # Regole FU/SE
     elif head5_fam in ph_lookup:
