@@ -122,7 +122,7 @@ for e in collector:
     type_name = type_name or ""
 
     head5_fam = fam_name[:5].upper()
-    head5_type = type_name[:5]
+    head5_type = type_name[:5].upper()
 
     target_ifcname = None
 
