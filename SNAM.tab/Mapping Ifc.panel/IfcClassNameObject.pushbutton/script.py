@@ -122,12 +122,12 @@ for e in collector:
     type_name = type_name or ""
 
     head5_fam = fam_name[:5].upper()
-    head5_type = type_name[:5].upper()
+    head5_type = type_name[:5]
 
     target_ifcname = None
 
     # Regola SNAM_
-    if head5_type.startswith("SNAM_") or head5_type.startswith("Tubazi") :
+    if head5_type.startswith("SNAM_") or head5_type.startswith("Tubaz") :
         for a, b in rules_ifcname:
             if b == "BARRE":
                 target_ifcname = a
