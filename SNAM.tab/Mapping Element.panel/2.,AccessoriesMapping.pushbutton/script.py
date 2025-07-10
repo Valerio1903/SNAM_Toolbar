@@ -11,6 +11,9 @@ clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List
+# WinForms dialog per selezione file
+clr.AddReference('System.Windows.Forms')
+from System.Windows.Forms import OpenFileDialog, DialogResult
 
 # converte colonna Excel (A Z, AA) in indice zero-based
 def col_letter_to_index(letter):
@@ -29,10 +32,20 @@ def format_cell_value(cell):
     if re.match(r'^-?\d+\.0$', s): return s[:-2]
     return s
 
-# PATHS e CONFIGURAZIONE
-MAP_RULES_EXCEL = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
-CI_FOLDER = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri"
-SCHEDA_MAP = "AP (Accessori per tubazioni)"
+def scegli_file_excel(titolo):
+    dialog = OpenFileDialog()
+    dialog.Title = titolo
+    dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
+    dialog.Multiselect = False
+    if dialog.ShowDialog() == DialogResult.OK:
+        return dialog.FileName
+    TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
+    raise SystemExit
+
+# ------------------- CONFIGURAZIONE DINAMICA -------------------
+MAP_RULES_EXCEL = scegli_file_excel("Seleziona il file Regole mappatura per Revit")
+CI_FILE         = scegli_file_excel("Seleziona il file CI_xxx.xlsx")
+SCHEDA_MAP      = "AP (Accessori per tubazioni)"  # rimane fisso
 
 doc = __revit__.ActiveUIDocument.Document
 filter_cat = List[ElementId]([ElementId(int(BuiltInCategory.OST_PipeAccessory))])
