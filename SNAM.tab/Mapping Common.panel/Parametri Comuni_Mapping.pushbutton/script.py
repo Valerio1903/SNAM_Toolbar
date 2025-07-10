@@ -37,8 +37,8 @@ SHEET_ALLEGATO= "Lista Asset Affidamento"
 
 # (poi, piu avanti, quando leggi i fogli:)
 try:
-    cols_mappe    = _read_cols(MAPPE_PATH, SHEET_MAPPE)
-    cols_allegato = _read_cols(ALLEGATO_PATH, SHEET_ALLEGATO)
+    cols_mappe    = leggi_colonne(MAPPE_PATH, SHEET_MAPPE)
+    cols_allegato = leggi_colonne(ALLEGATO_PATH, SHEET_ALLEGATO)
 except Exception as e:
     TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
     raise SystemExit
