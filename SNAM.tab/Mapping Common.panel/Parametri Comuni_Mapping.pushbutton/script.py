@@ -13,10 +13,7 @@ from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 # WinForms dialog
 clr.AddReference('System.Windows.Forms')
-from System.Windows.Forms import OpenFileDialog
-
-# Excel reader
-import xlrd
+from System.Windows.Forms import OpenFileDialog, DialogResult
 
 # ---------------- Funzione per selezionare un file Excel ----------------
 def scegli_file_excel(titolo):
@@ -24,11 +21,12 @@ def scegli_file_excel(titolo):
     dialog.Title = titolo
     dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
     dialog.Multiselect = False
-    if dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK:
+    if dialog.ShowDialog() == DialogResult.OK:
         return dialog.FileName
     else:
         TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
         raise SystemExit
+
 
 # ------------------- CONFIGURAZIONE DINAMICA -------------------
 # invece di hard-coding i path, apri due dialoghi:
