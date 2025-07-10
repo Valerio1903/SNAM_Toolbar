@@ -14,6 +14,9 @@ from Autodesk.Revit.UI import TaskDialog
 # WinForms dialog
 clr.AddReference('System.Windows.Forms')
 from System.Windows.Forms import OpenFileDialog, DialogResult
+from System.Collections.Generic import List as NetList
+# Excel
+import xlrd
 
 # ---------------- Funzione per selezionare un file Excel ----------------
 def scegli_file_excel(titolo):
