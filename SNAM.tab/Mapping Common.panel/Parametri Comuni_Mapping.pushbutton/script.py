@@ -1,24 +1,51 @@
 # -*- coding: utf-8 -*-
 """
-Compilazione automatica parametri comuni
+Compilazione automatica parametri comuni da file Excel Allegato 2
 """
 __title__ = 'Parametri comuni\n mapping'
 __author__ = 'Valerio Mascia'
+
 import clr, os, re
 # Revit API
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
-from System.Collections.Generic import List as NetList
-# Excel
+# WinForms dialog
+clr.AddReference('System.Windows.Forms')
+from System.Windows.Forms import OpenFileDialog
+
+# Excel reader
 import xlrd
 
-# ------------------- CONFIGURAZIONE -------------------
-MAPPE_PATH    = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
-ALLEGATO_PATH = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Allegato 2 - Lista Asset Affidamento.xlsx"
+# ---------------- Funzione per selezionare un file Excel ----------------
+def scegli_file_excel(titolo):
+    dialog = OpenFileDialog()
+    dialog.Title = titolo
+    dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
+    dialog.Multiselect = False
+    if dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK:
+        return dialog.FileName
+    else:
+        TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
+        raise SystemExit
+
+# ------------------- CONFIGURAZIONE DINAMICA -------------------
+# invece di hard-coding i path, apri due dialoghi:
+MAPPE_PATH    = scegli_file_excel("Seleziona il file Regole mappatura per Revit")
+ALLEGATO_PATH = scegli_file_excel("Seleziona il file Allegato 2 - Lista Asset Affidamento")
 SHEET_MAPPE   = "PARAMETRI COMUNI"
 SHEET_ALLEGATO= "Lista Asset Affidamento"
+
+# (poi, piu avanti, quando leggi i fogli:)
+try:
+    cols_mappe    = _read_cols(MAPPE_PATH, SHEET_MAPPE)
+    cols_allegato = _read_cols(ALLEGATO_PATH, SHEET_ALLEGATO)
+except Exception as e:
+    TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
+    raise SystemExit
+
+#  poi usi cols_mappe e cols_allegato nella logica esistente 
 
 # -------------------------------------------------------
 
