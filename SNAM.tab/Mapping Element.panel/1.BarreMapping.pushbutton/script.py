@@ -5,6 +5,7 @@ nel foglio "BARRE (CATEGORIA TUBAZIONI)" di Excel.
 """
 __title__ = 'Pipe\n mapping'
 __author__ = 'Valerio Mascia'
+
 import clr, os, re
 # Revit API
 clr.AddReference('RevitAPI')
@@ -12,9 +13,35 @@ clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as NetList
-from System import Enum
+# WinForms dialog per selezione file
+clr.AddReference('System.Windows.Forms')
+from System.Windows.Forms import OpenFileDialog, DialogResult
 # Excel reader
 import xlrd
+
+# ---------------- Funzione per selezionare un file Excel ----------------
+def scegli_file_excel(titolo):
+    dialog = OpenFileDialog()
+    dialog.Title = titolo
+    dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
+    dialog.Multiselect = False
+    if dialog.ShowDialog() == DialogResult.OK:
+        return dialog.FileName
+    TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
+    raise SystemExit
+
+# ------------------- CONFIGURAZIONE DINAMICA -------------------
+EXCEL_PATH   = scegli_file_excel("Seleziona il file Regole mappatura per Tubazioni")
+SHEET_REGOLE = "BARRE (CATEGORIA TUBAZIONI)"
+# Se hai piu fogli di lookup mettili in un dict cosi, ma il file lo scegli tu:
+DN_LOOKUP_SHEETS = {'BARRE_GASD':'BARRE_GASD'}
+
+DN_PARAMS = [
+    BuiltInParameter.RBS_PIPE_DIAMETER_PARAM,
+    BuiltInParameter.RBS_PIPE_OUTER_DIAMETER
+]
+
+# -----------------------------------------------------------------------
 
 # helper: col letter to index
 def col_letter_to_index(letter):
@@ -24,12 +51,13 @@ def col_letter_to_index(letter):
             idx = idx*26 + (ord(c.upper()) - ord('A') + 1)
     return idx - 1
 
-# CONFIGURAZIONE
-EXCEL_PATH       = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
-SHEET_REGOLE     = "BARRE (CATEGORIA TUBAZIONI)"
-DN_LOOKUP_SHEETS = {'BARRE_GASD':'BARRE_GASD'}
-DN_PARAMS        = [BuiltInParameter.RBS_PIPE_DIAMETER_PARAM,
-                    BuiltInParameter.RBS_PIPE_OUTER_DIAMETER]
+def _read_cols(path, sheet):
+    wb = xlrd.open_workbook(path)
+    ws = wb.sheet_by_name(sheet)
+    return [[ws.cell(r, c).value for r in range(ws.nrows)]
+            for c in range(ws.ncols)]
+
+#  qui continua il resto del tuo script esattamente come prima, usando EXCEL_PATH e SHEET_REGOLE 
 
 # utility functions
 _num = re.compile(r"[-+]?\d*\.?\d+")
