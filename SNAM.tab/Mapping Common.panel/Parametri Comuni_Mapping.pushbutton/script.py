@@ -35,16 +35,6 @@ ALLEGATO_PATH = scegli_file_excel("Seleziona il file Allegato 2 - Lista Asset Af
 SHEET_MAPPE   = "PARAMETRI COMUNI"
 SHEET_ALLEGATO= "Lista Asset Affidamento"
 
-# (poi, piu avanti, quando leggi i fogli:)
-try:
-    cols_mappe    = leggi_colonne(MAPPE_PATH, SHEET_MAPPE)
-    cols_allegato = leggi_colonne(ALLEGATO_PATH, SHEET_ALLEGATO)
-except Exception as e:
-    TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
-    raise SystemExit
-
-#  poi usi cols_mappe e cols_allegato nella logica esistente 
-
 # -------------------------------------------------------
 
 def col_letter_to_index(letter):
@@ -75,7 +65,15 @@ def leggi_colonne(path, sheet_name):
         col = [ws.cell(r, c).value for r in range(ws.nrows)]
         cols.append(col)
     return cols
+# (poi, piu avanti, quando leggi i fogli:)
+try:
+    cols_mappe    = leggi_colonne(MAPPE_PATH, SHEET_MAPPE)
+    cols_allegato = leggi_colonne(ALLEGATO_PATH, SHEET_ALLEGATO)
+except Exception as e:
+    TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
+    raise SystemExit
 
+#  poi usi cols_mappe e cols_allegato nella logica esistente 
 
 def build_param_values(map_cols, all_cols, codice_edificio, file_name):
     names = map_cols[1]   # colonna B
