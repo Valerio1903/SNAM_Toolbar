@@ -62,12 +62,15 @@ if not m:
     raise SystemExit
 model_code = m.group(1)
 
-ci_path = os.path.join(CI_FOLDER, "CI_" + model_code + ".xlsx")
-if not os.path.exists(ci_path):
-    TaskDialog.Show("Errore", "File CI_" + model_code + ".xlsx non trovato.")
-    raise SystemExit
+# User ha gia selezionato esattamente il file CI:
+ci_path = CI_FILE
+# (opzionale) verifica il nome corrisponda al codice:
+if os.path.basename(ci_path).upper() != ("CI_" + model_code + ".XLSX"):
+    TaskDialog.Show("Attenzione",
+        "Hai selezionato:\n  {}\nma mi aspettavo:\n  CI_{}.xlsx"
+        .format(os.path.basename(ci_path), model_code))
 
-# Carica workbook
+# apri direttamente:
 wb_ci = xlrd.open_workbook(ci_path)
 wb_map = xlrd.open_workbook(MAP_RULES_EXCEL)
 ws_map = wb_map.sheet_by_name(SCHEDA_MAP)
