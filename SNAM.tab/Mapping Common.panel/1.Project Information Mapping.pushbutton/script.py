@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Compilazione Project Information 
+Parametri progetto 
 Valorizzazione automatica da doc.Title e Excel Allegato 2
 """
-__title__ = 'Project information\nmapping'
+__title__ = 'Parametri progetto'
 __author__ = 'Valerio Mascia'
 
 import clr, os, re
@@ -74,13 +74,32 @@ if len(parts) < 4:
     raise SystemExit
 codice = parts[3].strip()
 
-# Trova riga Allegato per codice edificio (colonna F = idx 5)
+# Estrai valore per differenziare modelli: testo tra penultimo e ultimo trattino
+def estrai_segmento_finale(txt):
+    parts = txt.rsplit('-', 2)
+    if len(parts) == 3:
+        # parts = [prima, penultimo_segmento, ultimo_segmento]
+        return parts[1].strip()
+    return ''
+chiave = estrai_segmento_finale(base)
+
+# Trova righe Allegato con codice e match su colonna J
 colF = cols_allegato[5]
+colJ_idx = col_letter_to_index('J')
+colJ = cols_allegato[colJ_idx]
+
 rows = [i for i in range(1, len(colF)) if str(colF[i]).strip() == codice]
 if not rows:
     TaskDialog.Show('Errore', "Codice edificio '" + codice + "' non trovato in Allegato")
     raise SystemExit
+
+# Se piu righe, filtra per chiave su colonna J
 sel = rows[0]
+if len(rows) > 1:
+    for i in rows:
+        if str(colJ[i]).strip() == chiave:
+            sel = i
+            break
 
 # Estrai e normalizza valori
 title = doc.Title
