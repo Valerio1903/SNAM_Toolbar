@@ -145,10 +145,14 @@ for e in collector:
             p_pre.Set("BEND")
         target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
 
-    # Regole AP330/AP450
+    # Regole AP330/AP450 (aggiornato per intercettare nuove diciture)
     elif fam_name.startswith(("AP330", "AP450")) and (
         "con_comando_manuale_con_riduttore" in fam_name or
-        "con_comando_manuale_a_leva" in fam_name):
+        "con_comando_manuale_a_leva" in fam_name or
+        "con_comando_manuale_riduttore" in fam_name or
+        "con_comando_manuale_con_chiave_a_T" in fam_name
+    ):
+        # Trova tutte le IFCName presenti nel nome famiglia e seleziona la piu lunga
         matches = [a for a, _ in rules_ifcname if a.strip() in fam_name]
         if matches:
             target_ifcname = max(matches, key=len)
