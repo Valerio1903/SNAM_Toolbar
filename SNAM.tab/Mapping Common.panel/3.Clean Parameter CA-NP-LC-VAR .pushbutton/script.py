@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-pyRevit script IronPython 2.7: svuota i parametri con prefissi specifici
+Svuota i parametri con prefissi specifici, CA-NP-LC-VAR
 """
+__title__ = 'Clean Parameter\nCA-NC-LC-VAR'
+__author__ = 'Valerio Mascia'
 
 from pyrevit import revit, DB, script, forms
 
