@@ -3,278 +3,361 @@
 Compila i parametri delle tubazioni (Pipe Curves) basandosi sulle regole
 nel foglio "BARRE (CATEGORIA TUBAZIONI)" di Excel.
 """
-__title__ = 'Pipe\n mapping'
+__title__ = 'Pipe\nmapping'
 __author__ = 'Valerio Mascia'
 
-import clr, os, re
-# Revit API
-clr.AddReference('RevitAPI')
-clr.AddReference('RevitAPIUI')
+import clr
+import os
+import re
+import xlrd
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as NetList
-# WinForms dialog per selezione file
-clr.AddReference('System.Windows.Forms')
-from System.Windows.Forms import OpenFileDialog, DialogResult
-# Excel reader
-import xlrd
 
-# ---------------- Funzione per selezionare un file Excel ----------------
-def scegli_file_excel(titolo):
-    dialog = OpenFileDialog()
-    dialog.Title = titolo
-    dialog.Filter = "Excel Files (*.xls;*.xlsx)|*.xls;*.xlsx"
-    dialog.Multiselect = False
-    if dialog.ShowDialog() == DialogResult.OK:
-        return dialog.FileName
-    TaskDialog.Show("Errore", "Operazione annullata: file non selezionato.")
-    raise SystemExit
+def col_letter_to_index(letter):
+    idx = 0
+    for c in letter:
+        if c.isalpha():
+            idx = idx * 26 + (ord(c.upper()) - ord('A') + 1)
+    return idx - 1
 
-# ------------------- CONFIGURAZIONE DINAMICA -------------------
-EXCEL_PATH   = scegli_file_excel("Seleziona il file Regole mappatura per Tubazioni")
-SHEET_REGOLE = "BARRE (CATEGORIA TUBAZIONI)"
-# Se hai piu fogli di lookup mettili in un dict cosi, ma il file lo scegli tu:
-DN_LOOKUP_SHEETS = {'BARRE_GASD':'BARRE_GASD'}
+_num = re.compile("[-+]?\d*\.?\d+")
+
+def _first_number(txt):
+    m = _num.search(str(txt))
+    if m:
+        try:
+            v = float(m.group().replace(",", "."))
+            if v.is_integer():
+                return int(v)
+            return v
+        except:
+            pass
+    return None
 
 DN_PARAMS = [
     BuiltInParameter.RBS_PIPE_DIAMETER_PARAM,
     BuiltInParameter.RBS_PIPE_OUTER_DIAMETER
 ]
 
-# -----------------------------------------------------------------------
-
-# helper: col letter to index
-def col_letter_to_index(letter):
-    idx = 0
-    for c in letter:
-        if c.isalpha():
-            idx = idx*26 + (ord(c.upper()) - ord('A') + 1)
-    return idx - 1
-
-def _read_cols(path, sheet):
-    wb = xlrd.open_workbook(path)
-    ws = wb.sheet_by_name(sheet)
-    return [[ws.cell(r, c).value for r in range(ws.nrows)]
-            for c in range(ws.ncols)]
-
-#  qui continua il resto del tuo script esattamente come prima, usando EXCEL_PATH e SHEET_REGOLE 
-
-# utility functions
-_num = re.compile(r"[-+]?\d*\.?\d+")
-def _first_number(txt):
-    m = _num.search(str(txt))
-    if m:
-        try:
-            v = float(m.group().replace(',', '.'))
-            return int(v) if v.is_integer() else v
-        except:
-            pass
-    return None
-
 def _get_dn(el):
     for bip in DN_PARAMS:
         prm = el.get_Parameter(bip)
         if prm:
-            num = _first_number(prm.AsValueString() or '')
+            num = _first_number(prm.AsValueString() or "")
             if num is not None:
                 return int(round(num))
     return None
 
 def _param_to_str(prm):
     if prm.StorageType == StorageType.Double:
-        s = prm.AsValueString() or ''
-        if s.strip(): return s.strip()
-        return ('{:.6f}'.format(prm.AsDouble())).rstrip('0').rstrip('.')
+        s = prm.AsValueString() or ""
+        if s.strip():
+            return s.strip()
+        return ("{:.6f}".format(prm.AsDouble())).rstrip("0").rstrip(".")
     if prm.StorageType == StorageType.Integer:
         return str(prm.AsInteger())
-    return (prm.AsString() or '').strip()
+    return (prm.AsString() or "").strip()
 
-# read Excel columns
+def _val_to_str(val):
+    try:
+        n = float(val)
+        if n.is_integer():
+            return str(int(n))
+        return str(n)
+    except:
+        return str(val)
+
 def _read_cols(path, sheet):
     wb = xlrd.open_workbook(path)
     ws = wb.sheet_by_name(sheet)
     cols = []
     for c in range(ws.ncols):
-        col = [ws.cell(r, c).value for r in range(ws.nrows)]
+        col = []
+        for r in range(ws.nrows):
+            col.append(ws.cell(r, c).value)
         cols.append(col)
     return cols
- # evita i decimali
-def _val_to_str(val):
+
+def _get_type_name_pipe(el, doc):
     try:
-        num = float(val)
-        if num.is_integer():
-            return str(int(num))
-        else:
-            return str(num)
+        typ = doc.GetElement(el.GetTypeId())
+        if typ:
+            p = typ.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+            return (p.AsString() or "") if p else ""
     except:
-        return str(val)
+        pass
+    return ""
 
-# MAIN
-uiapp = __revit__
-doc = uiapp.ActiveUIDocument.Document
 
-# load rules
-try:
-    cols = _read_cols(EXCEL_PATH, SHEET_REGOLE)
-except Exception as e:
-    TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
-    raise SystemExit
+def process_document(doc):
+    excel_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Regole mappatura per Revit_2Dto6D.xlsx"
+    sheet = "BARRE (CATEGORIA TUBAZIONI)"
+    dn_lookup = {"BARRE_GASD": "BARRE_GASD"}
 
-param_names = [str(c).strip() for c in cols[1]]
-codes       = [str(c).strip().upper() for c in cols[2]]
-descripts   = [str(c).strip() for c in cols[3]]
-rules = [(param_names[i], codes[i], descripts[i])
-         for i in range(1, len(param_names)) if param_names[i]]
+    # Allegato 3 per la regola J
+    allegato3_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Allegato 3 - Classi e mappatura IFC.xlsx"
+    allegato3_sheet = "Elenco NO"
+    allegato_data = None  # caricato lazy al primo uso di J
 
-# collect elements
-pipes = (FilteredElementCollector(doc)
-    .WherePasses(ElementMulticategoryFilter(NetList[ElementId]([ElementId(int(BuiltInCategory.OST_PipeCurves))])))
-    .WhereElementIsNotElementType()
-    .ToElements())
+    cols = _read_cols(excel_path, sheet)
+    names = [str(c).strip() for c in cols[1]]
+    codes = [str(c).strip().upper() for c in cols[2]]
+    descs = [str(c).strip() for c in cols[3]]
+    rules = []
+    for i in range(1, len(names)):
+        if names[i]:
+            rules.append((names[i], codes[i], descs[i]))
 
-# prepare
-x_cache = {}
-parts = (doc.Title or '').split('-')
-segG = parts[4] if len(parts) > 4 else ''
-res_params = {}
-warnings = []
+    pipes = FilteredElementCollector(doc) \
+        .WherePasses(ElementMulticategoryFilter(NetList[ElementId]([
+            ElementId(int(BuiltInCategory.OST_PipeCurves))
+        ]))) \
+        .WhereElementIsNotElementType() \
+        .ToElements()
 
-# STEP 1: apply all except L
-t1 = Transaction(doc, 'Mappa Barre Step1')
-t1.Start()
-for el in pipes:
-    dn_cache = None
-    for tgt, code, desc in rules:
-        if code == 'L': continue
-        prm = el.LookupParameter(tgt)
-        if not prm or prm.IsReadOnly: continue
-        if code == 'N/C':
-            prm.Set('N/C'); res_params[tgt] = 'N/C'; continue
-        if code == 'C':
-            val_str = _val_to_str(desc)
-            prm.Set(val_str); res_params[tgt] = val_str
-            continue
-        if code == 'X':
-            mcol = re.search(r'colonna\s+([A-Za-z]+)', desc, re.I)
-            msht = re.search(r'foglio\s+"([^\"]+)"', desc)
-            if mcol and msht:
-                sheet = DN_LOOKUP_SHEETS.get(msht.group(1), msht.group(1))
-                if sheet not in x_cache: x_cache[sheet] = _read_cols(EXCEL_PATH, sheet)
-                lk = x_cache[sheet]
-                if dn_cache is None: dn_cache = _get_dn(el)
-                if dn_cache is None:
-                    warnings.append((tgt, 'DN non trovato'))
-                    continue
-                colF = lk[1]
-                row = next((i for i in range(1, len(colF)) if _first_number(colF[i]) == dn_cache), None)
-                if row is None:
-                    warnings.append((tgt, 'DN {} non in {}'.format(dn_cache, sheet)))
-                    continue
-                idx = col_letter_to_index(mcol.group(1))
-                if idx < len(lk) and row < len(lk[idx]):
-                    val = lk[idx][row]
-                    val_str = _val_to_str(val)
-                    prm.Set(val_str); res_params[tgt] = val_str
-            continue
-        if code == 'Z':
-            try:
-                bip = getattr(BuiltInParameter, desc)
-                src = el.get_Parameter(bip)
-            except:
-                src = None
-            if src:
-                val = _param_to_str(src)
-                val_str = _val_to_str(val)
-                prm.Set(val_str); res_params[tgt] = val_str
-            continue
-        if code == 'G':
-            names = re.findall(r'"([^\"]+)"', desc)
-            vals = re.findall(r"\(([^\)]+)\)", desc)
-            tv = vals[0].strip() if vals else ''
-            fv = vals[1].strip() if len(vals) > 1 else ''
-            chosen = tv if segG in names else fv
-            val_str = _val_to_str(chosen)
-            prm.Set(val_str); res_params[tgt] = val_str
-            continue
-        if code == 'K':
-            opts = [v.strip() for v in desc.split(';')]
-            if len(opts) >= 3:
+    cache = {}
+    parts = (doc.Title or "").split("-")
+    segG = parts[4] if len(parts) > 4 else ""
+    res_params = {}
+    warnings = []
+
+    # STEP 1 (tutte le regole eccetto L)
+    t1 = Transaction(doc, "Mappa Barre Step1")
+    t1.Start()
+    for el in pipes:
+        dn_cache = None
+        for tgt, code, desc in rules:
+            if code == "L":
+                continue
+            prm = el.LookupParameter(tgt)
+            if prm is None or prm.IsReadOnly:
+                continue
+
+            # --- (RIMOSSA) N/C: ora ignorata ---
+            if code == "N/C":
+                # Ignora: non scrive, non conta, nessun warning
+                continue
+
+            # C (costante)
+            if code == "C":
+                v = _val_to_str(desc)
+                prm.Set(v)
+                res_params[tgt] = v
+                continue
+
+            # X (lookup su foglio GASD dichiarato in descrizione: DN match)
+            if code == "X":
+                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
+                msht = re.search(r'foglio\s+"([^"]+)"', desc)
+                if mcol and msht:
+                    sht = dn_lookup.get(msht.group(1), msht.group(1))
+                    if sht not in cache:
+                        cache[sht] = _read_cols(excel_path, sht)
+                    data = cache[sht]
+                    if dn_cache is None:
+                        dn_cache = _get_dn(el)
+                    if dn_cache is None:
+                        warnings.append((tgt, "DN non trovato"))
+                        continue
+                    # nel tuo file le DN stanno in data[1] (2ª colonna)
+                    colDN = data[1]
+                    row = None
+                    for irow in range(1, len(colDN)):
+                        if _first_number(colDN[irow]) == dn_cache:
+                            row = irow
+                            break
+                    if row is None:
+                        warnings.append((tgt, "DN " + str(dn_cache) + " non in " + sht))
+                        continue
+                    idx = col_letter_to_index(mcol.group(1))
+                    if idx < len(data) and row < len(data[idx]):
+                        val = data[idx][row]
+                        vstr = _val_to_str(val)
+                        prm.Set(vstr)
+                        res_params[tgt] = vstr
+                continue
+
+            # Z (copia BuiltInParameter indicato in chiaro nella descrizione)
+            if code == "Z":
+                try:
+                    bip = getattr(BuiltInParameter, desc)
+                    src = el.get_Parameter(bip)
+                except:
+                    src = None
+                if src:
+                    vstr = _val_to_str(_param_to_str(src))
+                    prm.Set(vstr)
+                    res_params[tgt] = vstr
+                continue
+
+            # G (segmento titolo progetto)
+            if code == "G":
+                keys = re.findall(r'"([^"]+)"', desc)
+                vals = re.findall(r"\(([^)]+)\)", desc)
+                tv = vals[0].strip() if vals else ""
+                fv = vals[1].strip() if len(vals) > 1 else ""
+                chosen = tv if segG in keys else fv
+                vstr = _val_to_str(chosen)
+                prm.Set(vstr)
+                res_params[tgt] = vstr
+                continue
+
+            # K (NUOVA) -> due opzioni separate da ';' in base a offset < 0
+            if code == "K":
+                left, right = "", ""
+                parts_k = desc.split(";", 1)
+                if len(parts_k) >= 1:
+                    left = parts_k[0].strip()
+                if len(parts_k) == 2:
+                    right = parts_k[1].strip()
                 elev = None
                 try:
-                    offset_param = el.get_Parameter(BuiltInParameter.RBS_OFFSET_PARAM)
-                    if offset_param:
-                        elev = offset_param.AsDouble()  
-                        elev_m = elev * 0.3048  
-                    else:
-                        elev_m = None
+                    off = el.get_Parameter(BuiltInParameter.RBS_OFFSET_PARAM)
+                    if off and off.StorageType == StorageType.Double:
+                        elev = off.AsDouble()  # feet; confronto solo segno
                 except:
-                    elev_m = None
-                if elev_m is None:
-                    chosen = opts[2]
-                elif elev_m > 0:
-                    chosen = opts[0]
-                elif elev_m == 0:
-                    chosen = opts[1]
-                else:
-                    chosen = opts[2]
-                val_str = _val_to_str(chosen)
-                prm.Set(val_str); res_params[tgt] = val_str
-            continue
-t1.Commit()
+                    elev = None
+                choice = (left or right) if (elev is not None and elev < 0.0) else (right or left)
+                if choice != "":
+                    vstr = _val_to_str(choice)
+                    prm.Set(vstr)
+                    res_params[tgt] = vstr
+                continue
 
-# STEP 2: regola L dinamica da Excel (con supporto per parentesi multiple)
-l_rule = next((r for r in rules if r[1] == 'L'), None)
-if l_rule:
-    tgt_l, code_l, desc_l = l_rule
+            # J (MODIFICATA) -> Allegato 3, 'colonna X', chiave = prefisso 5 del **TYPE NAME**
+            if code == "J":
+                # carica Allegato 3 la prima volta
+                if allegato_data is None:
+                    try:
+                        allegato_data = _read_cols(allegato3_path, allegato3_sheet)
+                    except:
+                        allegato_data = None
+                if allegato_data is None:
+                    warnings.append((tgt, "J: impossibile aprire Allegato 3"))
+                    continue
 
-    # Estrai il parametro da leggere e le condizioni dal testo Excel
-    m_param = re.match(r'"([^"]+)"', desc_l)
-    if not m_param:
-        TaskDialog.Show('Errore regola L', 'Parametro sorgente non trovato nella regola L.')
-        raise SystemExit
+                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc or "", re.I)
+                if not mcol:
+                    warnings.append((tgt, "J: 'colonna X' non specificata"))
+                    continue
+                idx_out = col_letter_to_index(mcol.group(1).upper())
+                if idx_out < 0 or idx_out >= len(allegato_data):
+                    warnings.append((tgt, "J: colonna '{}' fuori range".format(mcol.group(1).upper())))
+                    continue
 
-    param_da_leggere = m_param.group(1)
+                # >>> prefisso 5 dal TYPE NAME (non dal Family Name)
+                type_name_up = (_get_type_name_pipe(el, doc) or "").upper()
+                prefix5 = type_name_up[:5]
+                if not prefix5:
+                    warnings.append((tgt, "J: prefisso Type Name vuoto"))
+                    continue
 
-    # Regex corretta per parentesi multiple nel valore
-    pattern_condizioni = re.compile(r'([^\(\)-]+)\s*\((.+?)\)(?:\s*-|$)')
-    condizioni_map = {}
-    for match in pattern_condizioni.finditer(desc_l):
-        condizione = match.group(1).strip().lower()
-        valore = match.group(2).strip()
-        condizioni_map[condizione] = valore
+                colA = allegato_data[0] if len(allegato_data) > 0 else []
+                row = None
+                for irow in range(1, len(colA)):
+                    if str(colA[irow]).strip().upper() == prefix5:
+                        row = irow
+                        break
+                if row is None:
+                    warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(prefix5)))
+                    continue
+                if row >= len(allegato_data[idx_out]):
+                    warnings.append((tgt, "J: riga {} oltre dati col. {}".format(row, mcol.group(1).upper())))
+                    continue
 
-    if not condizioni_map:
-        TaskDialog.Show('Errore regola L', 'Nessuna condizione trovata nella regola L.')
-        raise SystemExit
+                val = allegato_data[idx_out][row]
+                vstr = _val_to_str(val)
+                prm.Set(vstr)
+                res_params[tgt] = vstr
+                continue
 
-    # Esegui la transazione per impostare il valore
-    t2 = Transaction(doc, 'Mappa Barre Step2')
-    t2.Start()
-    for el in pipes:
-        prm_l = el.LookupParameter(tgt_l)
-        if not prm_l or prm_l.IsReadOnly:
-            continue
+            # M (NUOVA) -> mapping da parametro sorgente istanza "SRC" -> (SRC_VAL, OUT_VAL)
+            if code == "M":
+                msrc = re.match(r'\s*"([^"]+)"', desc or "")
+                if not msrc:
+                    warnings.append((tgt, "M: parametro sorgente non specificato"))
+                    continue
+                src_name = msrc.group(1).strip()
+                srcp = el.LookupParameter(src_name)
+                if srcp is None:
+                    warnings.append((tgt, "M: parametro sorgente '{}' non trovato".format(src_name)))
+                    continue
+                src_val = _param_to_str(srcp).strip()
+                chosen = None
+                for pair in re.findall(r"\(([^()]*)\)", desc or ""):
+                    bits = pair.split(",", 1)
+                    if len(bits) >= 2 and src_val == bits[0].strip():
+                        chosen = bits[1].strip()
+                        break
+                if chosen is not None and chosen != "":
+                    vstr = _val_to_str(chosen)
+                    prm.Set(vstr)
+                    res_params[tgt] = vstr
+                continue
+    # end for rules
+    t1.Commit()
 
-        ref = el.LookupParameter(param_da_leggere)
-        ref_val = (ref.AsString() or '').strip().lower() if ref else ''
+    # STEP 2: regola L (immutata)
+    l_rule = None
+    for r in rules:
+        if r[1] == "L":
+            l_rule = r
+            break
 
-        chosen = condizioni_map.get(ref_val.strip().lower(), condizioni_map.get('default', None))
+    if l_rule is not None:
+        target_param, _, rule_desc = l_rule
 
-        if chosen:
-            prm_l.Set(chosen)
-            res_params[tgt_l] = chosen
-        else:
-            warnings.append((tgt_l, 'Condizione "{}" non riconosciuta'.format(ref_val)))
+        # tolgo quadre esterne
+        if rule_desc.startswith("[") and rule_desc.endswith("]"):
+            rule_desc = rule_desc[1:-1].strip()
 
-    t2.Commit()
+        # estraggo il nome del parametro sorgente (tra le prime virgolette)
+        src_match = re.match(r'"([^"]+)"', rule_desc)
+        if not src_match:
+            TaskDialog.Show("Errore", "Parametro sorgente non trovato in regola L.")
+            return
+        source_name = src_match.group(1)
 
+        # divido per '-' ogni condizione
+        partsL = rule_desc.split("-")
+        cond_map = {}
+        for part in partsL:
+            part = part.strip()
+            start = part.find("[")
+            end   = part.find("]")
+            if start >= 0 and end > start:
+                key = part[:start].strip().lower()
+                val = part[start+1:end].strip()
+                cond_map[key] = val
 
+        default_val = cond_map.get("default", "")
 
+        t2 = Transaction(doc, "Mappa Barre Step2")
+        t2.Start()
+        for el in pipes:
+            prm_l = el.LookupParameter(target_param)
+            if prm_l is None or prm_l.IsReadOnly:
+                continue
+            srcp = el.LookupParameter(source_name)
+            val_key = ""
+            if srcp and srcp.AsString() is not None:
+                val_key = srcp.AsString().strip().lower()
+            chosen = cond_map.get(val_key, default_val)
+            if chosen != "":
+                prm_l.Set(chosen)
+                res_params[target_param] = chosen
+        t2.Commit()
 
-# report finale
-msg = 'Parametri aggiornati: {0}\n'.format(len(res_params))
-if warnings:
-    msg += 'Warning:\n'
-    for p, w in warnings:
-        msg += '- {0}: {1}\n'.format(p, w)
-TaskDialog.Show('Risultato', msg)
+    msg = "Parametri aggiornati: {}".format(len(res_params))
+    if warnings:
+        msg += "\nWarning:"
+        for p, w in warnings:
+            msg += "\n- {}: {}".format(p, w)
+
+    TaskDialog.Show("Risultato", msg)
+    
+
+# punto di ingresso pyRevit
+doc = __revit__.ActiveUIDocument.Document
+process_document(doc)
