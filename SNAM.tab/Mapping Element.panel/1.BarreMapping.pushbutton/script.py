@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Compila i parametri delle tubazioni (Pipe Curves) basandosi sulle regole
-nel foglio "BARRE (CATEGORIA TUBAZIONI)" di Excel.
+Compilazione parametri da CI_xxx.xlsx, Regole mappatura e CSV di linea (AP)
+Pipe Accessories + Pipe Fittings (famiglie AP)
 """
-__title__ = 'Pipe mapping'
+
+__title__ = 'Accessories mapping'
 __author__ = 'Valerio Mascia'
 
-import clr
-import os
-import re
-import xlrd
+import clr, os, re, xlrd, csv
 from Autodesk.Revit.DB import *
-from Autodesk.Revit.UI import TaskDialog
-from System.Collections.Generic import List as NetList
+from Autodesk.Revit.DB import TransactionStatus
+from System.Collections.Generic import List
+from Autodesk.Revit.DB import StorageType, UnitTypeId
 
+# ---------- Helper Excel/CSV ----------
 def col_letter_to_index(letter):
     idx = 0
     for c in letter:
@@ -21,343 +21,551 @@ def col_letter_to_index(letter):
             idx = idx * 26 + (ord(c.upper()) - ord('A') + 1)
     return idx - 1
 
-_num = re.compile("[-+]?\d*\.?\d+")
+def format_cell_value(cell):
+    v = cell.value
+    if cell.ctype == 2:
+        if int(v) == v:
+            return str(int(v))
+        return str(v)
+    s = str(v).strip()
+    if re.match(r'^-?\d+\.0$', s):
+        return s[:-2]
+    return s
 
-def _first_number(txt):
-    m = _num.search(str(txt))
-    if m:
-        try:
-            v = float(m.group().replace(",", "."))
-            if v.is_integer():
-                return int(v)
-            return v
-        except:
-            pass
-    return None
-
-DN_PARAMS = [
-    BuiltInParameter.RBS_PIPE_DIAMETER_PARAM,
-    BuiltInParameter.RBS_PIPE_OUTER_DIAMETER
-]
-
-def _get_dn(el):
-    for bip in DN_PARAMS:
-        prm = el.get_Parameter(bip)
-        if prm:
-            num = _first_number(prm.AsValueString() or "")
-            if num is not None:
-                return int(round(num))
-    return None
-
-def _param_to_str(prm):
-    if prm.StorageType == StorageType.Double:
-        s = prm.AsValueString() or ""
-        if s.strip():
-            return s.strip()
-        return ("{:.6f}".format(prm.AsDouble())).rstrip("0").rstrip(".")
-    if prm.StorageType == StorageType.Integer:
+def get_param_as_string(prm):
+    if prm is None:
+        return None
+    st = prm.StorageType
+    if st == StorageType.String:
+        return prm.AsString().strip() if prm.AsString() else None
+    if st == StorageType.Integer:
         return str(prm.AsInteger())
-    return (prm.AsString() or "").strip()
+    if st == StorageType.Double:
+        return str(prm.AsDouble())
+    if st == StorageType.ElementId:
+        return str(prm.AsElementId().IntegerValue)
+    return None
 
-def _val_to_str(val):
+def read_csv_rows(path):
+    # autodetect delimitatore ; o ,
+    with open(path, 'rb') as fb:
+        raw = fb.read().decode('utf-8-sig', 'ignore')
+    first_line = raw.splitlines()[0] if raw.splitlines() else ""
+    delim = ';' if first_line.count(';') >= first_line.count(',') else ','
+    rows = []
+    for row in csv.reader(raw.splitlines(), delimiter=delim):
+        rows.append([c.strip() for c in row])
+    return rows
+
+# ---------- Helper T (come NO033) ----------
+def _level_elev_ft(lv):
+    if not lv: return None
     try:
-        n = float(val)
-        if n.is_integer():
-            return str(int(n))
-        return str(n)
-    except:
-        return str(val)
-
-def _read_cols(path, sheet):
-    wb = xlrd.open_workbook(path)
-    ws = wb.sheet_by_name(sheet)
-    cols = []
-    for c in range(ws.ncols):
-        col = []
-        for r in range(ws.nrows):
-            col.append(ws.cell(r, c).value)
-        cols.append(col)
-    return cols
-
-def _get_type_name_pipe(el, doc):
-    try:
-        typ = doc.GetElement(el.GetTypeId())
-        if typ:
-            p = typ.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-            return (p.AsString() or "") if p else ""
+        p = lv.get_Parameter(BuiltInParameter.LEVEL_ELEV)
+        if p and p.StorageType == StorageType.Double:
+            return p.AsDouble()
     except:
         pass
-    return ""
+    try:
+        return lv.Elevation
+    except:
+        return None
+
+def _ft_to_mm(x_ft):
+    try:
+        return UnitUtils.ConvertFromInternalUnits(x_ft, UnitTypeId.Millimeters)
+    except:
+        return x_ft * 304.8
+
+def _fmt_mm(v_mm):
+    s = "{:.3f}".format(v_mm)
+    return s.rstrip("0").rstrip(".")
+
+def _elem_world_z_ft(doc, el):
+    # livello assegnato
+    lvl = None
+    try:
+        if hasattr(el, "LevelId") and el.LevelId and el.LevelId.IntegerValue > 0:
+            lvl = doc.GetElement(el.LevelId)
+        if lvl is None:
+            plev = el.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)
+            if plev and plev.StorageType == StorageType.ElementId:
+                lvl = doc.GetElement(plev.AsElementId())
+    except:
+        lvl = None
+    z_lvl = _level_elev_ft(lvl)
+
+    # offset istanza
+    off = None
+    for bip in (BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM,
+                BuiltInParameter.RBS_OFFSET_PARAM,
+                BuiltInParameter.INSTANCE_ELEVATION_PARAM):
+        try:
+            p = el.get_Parameter(bip)
+            if p and p.StorageType == StorageType.Double:
+                off = p.AsDouble()
+                break
+        except:
+            pass
+
+    if z_lvl is not None and off is not None:
+        return z_lvl + off
+
+    # fallback: posizione geometrica
+    try:
+        loc = el.Location
+        if hasattr(loc, "Point") and loc.Point:
+            return loc.Point.Z
+    except:
+        pass
+    return None
+
+# ---------- PATHS e CONFIG ----------
+MAP_RULES_EXCEL = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
+CI_FOLDER        = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri"
+SCHEDA_MAP       = "AP (Accessori per tubazioni)"
+SCHEDA_COMMON    = "PARAMETRI COMUNI"
+
+# Allegato 3 (per J)
+ALLEGATO3_PATH  = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Allegato 3 - Classi e mappatura IFC.xlsx"
+ALLEGATO3_SHEET = "Elenco AP"
+
+# CSV per P
+P_CSV_PATH      = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\DQ_MGRC2_P_LIN_FP_LINEA.csv"
+P_MATCH_COL_G   = col_letter_to_index('G')  # 0-based
+
+# ---------- Setup documento ----------
+doc = __revit__.ActiveUIDocument.Document
+
+# Collector PA + PF
+filter_cat = List[ElementId]([
+    ElementId(int(BuiltInCategory.OST_PipeAccessory)),
+    ElementId(int(BuiltInCategory.OST_PipeFitting))
+])
+elements   = FilteredElementCollector(doc)\
+    .WherePasses(ElementMulticategoryFilter(filter_cat))\
+    .WhereElementIsNotElementType()\
+    .ToElements()
+
+# Estrai codice modello dal titolo (per CI)
+title = doc.Title or ""
+m_model = re.search(r"-(\d+)_", title)
+if not m_model:
+    print("Errore: impossibile estrarre il codice modello dal nome file.")
+    raise SystemExit
+model_code = m_model.group(1)
+
+# Segmenti titolo per G e P
+parts_title = title.split('-')
+segG = parts_title[4] if len(parts_title) > 4 else ""  # come prima
+segP_raw = parts_title[3] if len(parts_title) > 3 else ""  # tra 3° e 4° trattino
+
+# Trasformazione speciale per P: "_" -> "/" (primo), poi "_" -> "." (secondo)
+def _transform_ap_key(s):
+    s = s or ""
+    i1 = s.find("_")
+    if i1 >= 0:
+        s = s[:i1] + "/" + s[i1+1:]
+        i2 = s.find("_")
+        if i2 >= 0:
+            s = s[:i2] + "." + s[i2+1:]
+    return s
+segP = _transform_ap_key(segP_raw)
+
+# Percorsi e workbook
+ci_path = os.path.join(CI_FOLDER, "CI_{0}.xlsx".format(model_code))
+if not os.path.exists(ci_path):
+    print("Errore: file {0} non trovato.".format(ci_path))
+    raise SystemExit
+
+wb_ci  = xlrd.open_workbook(ci_path)
+wb_map = xlrd.open_workbook(MAP_RULES_EXCEL)
+
+# Regole mappatura
+ws_map = wb_map.sheet_by_name(SCHEDA_MAP)
+
+# Parametri comuni
+ws_common = wb_map.sheet_by_name(SCHEDA_COMMON)
+common_params = set()
+for i in range(1, ws_common.nrows):
+    pname = str(ws_common.cell(i, 1).value).strip()
+    if pname:
+        common_params.add(pname)
+
+# Costruisci regole
+param_rules = []
+rule_names  = set()
+for i in range(1, ws_map.nrows):
+    pname = str(ws_map.cell(i, 1).value).strip()
+    if not pname:
+        continue
+    rule_names.add(pname)
+    mode = str(ws_map.cell(i, 2).value or "").strip().upper()
+    desc = str(ws_map.cell(i, 3).value or "").strip()
+
+    if mode == "W":
+        m_col   = re.search(r"colonna\s+([A-Z]+)", desc, re.I)
+        m_sheet = re.search(r'foglio\s+"([^"]+)"', desc, re.I)
+        if m_col and m_sheet:
+            col    = m_col.group(1)
+            sheet  = m_sheet.group(1)
+            idx    = col_letter_to_index(col)
+            prefix = pname.split("_")[0].upper()
+            param_rules.append(("W", pname, prefix, sheet, idx))
+
+    elif mode == "C":
+        param_rules.append(("C", pname, format_cell_value(ws_map.cell(i, 3))))
+
+    elif mode == "D":
+        names = re.findall(r'"([^"]+)"', desc)
+        mval  = re.search(r"\(([^\)]+)\)", desc)
+        param_rules.append(("D", pname, names, mval.group(1).strip() if mval else ""))
+
+    elif mode == "E":
+        param_rules.append(("E", pname, re.findall(r'"([^"]+)"', desc)))
+
+    elif mode == "F":
+        names = re.findall(r'"([^"]+)"', desc)
+        vals  = re.findall(r"\(([^\)]+)\)", desc)
+        param_rules.append(("F", pname, names,
+                            vals[0].strip() if len(vals)>0 else "",
+                            vals[1].strip() if len(vals)>1 else ""))
+
+    elif mode == "G":
+        names = re.findall(r'"([^"]+)"', desc)
+        vals  = re.findall(r"\(([^\)]+)\)", desc)
+        param_rules.append(("G", pname, names,
+                            vals[0].strip() if len(vals)>0 else "",
+                            vals[1].strip() if len(vals)>1 else ""))
+
+    # --- NUOVE ---
+    elif mode == "J":
+        m_col = re.search(r"colonna\s+([A-Z]+)", desc, re.I)
+        if m_col:
+            idx = col_letter_to_index(m_col.group(1))
+            param_rules.append(("J", pname, idx))
+
+    elif mode == "K":
+        # due opzioni separate da ';' (left;right) in base a elevazione/offset < 0
+        param_rules.append(("K", pname, desc or ""))
+
+    elif mode == "T":
+        # nessun extra; calcolo geometrico
+        param_rules.append(("T", pname))
+
+    elif mode == "P":
+        # colonna da prendere dal CSV "colonna X"
+        m_col = re.search(r"colonna\s+([A-Z]+)", desc, re.I)
+        if m_col:
+            idx = col_letter_to_index(m_col.group(1))
+            param_rules.append(("P", pname, idx))
+
+    elif mode == "N":
+        # "famiglie" tra virgolette; coppie [TYPE6](VAL)
+        fam_keys = re.findall(r'"([^"]+)"', desc or "")
+        pairs    = re.findall(r"\[([^\]]+)\]\s*\(([^)]*)\)", desc or "")
+        # pairs = [("TYPE6", "VAL"), ...]
+        param_rules.append(("N", pname, fam_keys, pairs))
 
 
-def process_document(doc):
-    excel_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Regole mappatura per Revit_2Dto6D.xlsx"
-    sheet = "BARRE (CATEGORIA TUBAZIONI)"
-    dn_lookup = {"BARRE_GASD": "BARRE_GASD"}
+# Prepara dati per W
+data_by_sheet = {}
+sap_col_map   = {"Report":1, "Consistenza Impiantistica":col_letter_to_index('N')}
+for rule in param_rules:
+    if rule[0] == "W":
+        sheet = rule[3]
+        if sheet not in data_by_sheet:
+            ws     = wb_ci.sheet_by_name(sheet)
+            sap_col= sap_col_map.get(sheet, 1)
+            rows   = []
+            for r in range(1, ws.nrows):
+                code = format_cell_value(ws.cell(r, sap_col))
+                if not code:
+                    continue
+                rows.append((code, [format_cell_value(ws.cell(r, c)) for c in range(ws.ncols)]))
+            data_by_sheet[sheet] = rows
 
-    # Allegato 3 per la regola J
-    allegato3_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Allegato 3 - Classi e mappatura IFC.xlsx"
-    allegato3_sheet = "Elenco NO"
-    allegato_data = None  # caricato lazy al primo uso di J
+# Carica Allegato3 per J (lazy in uso)
+allegato_data = None
 
-    cols = _read_cols(excel_path, sheet)
-    names = [str(c).strip() for c in cols[1]]
-    codes = [str(c).strip().upper() for c in cols[2]]
-    descs = [str(c).strip() for c in cols[3]]
-    rules = []
-    for i in range(1, len(names)):
-        if names[i]:
-            rules.append((names[i], codes[i], descs[i]))
+# Carica CSV per P
+csv_rows = []
+csv_g_index = P_MATCH_COL_G
+try:
+    csv_rows = read_csv_rows(P_CSV_PATH)
+except:
+    csv_rows = []
 
-    pipes = FilteredElementCollector(doc) \
-        .WherePasses(ElementMulticategoryFilter(NetList[ElementId]([
-            ElementId(int(BuiltInCategory.OST_PipeCurves))
-        ]))) \
-        .WhereElementIsNotElementType() \
-        .ToElements()
+# Indicizzazione CSV per colonna G
+csv_by_key = {}
+if csv_rows:
+    for i in range(1, len(csv_rows)):  # salta header
+        row = csv_rows[i]
+        if csv_g_index < len(row):
+            k = row[csv_g_index].strip()
+            if k:
+                csv_by_key[k] = row
 
-    cache = {}
-    parts = (doc.Title or "").split("-")
-    segG = parts[4] if len(parts) > 4 else ""
-    res_params = {}
-    warnings = []
+# --- Precalcolo per T: livello matchato al PBP ---
+matched_level = None
+pbp_elev = None
+try:
+    pbps = (FilteredElementCollector(doc)
+            .OfCategory(BuiltInCategory.OST_ProjectBasePoint)
+            .WhereElementIsNotElementType()
+            .ToElements())
+    if pbps:
+        ep = pbps[0].get_Parameter(BuiltInParameter.BASEPOINT_ELEVATION_PARAM)
+        if ep and ep.StorageType == StorageType.Double:
+            pbp_elev = ep.AsDouble()
+except:
+    pbp_elev = None
 
-    # STEP 1 (tutte le regole eccetto L)
-    t1 = Transaction(doc, "Mappa Barre Step1")
-    t1.Start()
-    for el in pipes:
-        dn_cache = None
-        for tgt, code, desc in rules:
-            if code == "L":
-                continue
-            prm = el.LookupParameter(tgt)
+if pbp_elev is not None:
+    levels = list(FilteredElementCollector(doc).OfClass(Level).ToElements())
+    tol = 1e-4
+    closest = None; dmin = None
+    for lv in levels:
+        lev = _level_elev_ft(lv)
+        if lev is None: continue
+        d = abs(lev - pbp_elev)
+        if dmin is None or d < dmin:
+            dmin = d; closest = lv
+        if d < tol:
+            matched_level = lv
+            break
+    if matched_level is None:
+        matched_level = closest
+
+# ------------------- TRANSAZIONE -------------------
+trans = Transaction(doc, "AP mapping (PA + PF)")
+trans.Start()
+try:
+    debug_log   = []
+    param_count = 0
+
+    for el in elements:
+        sym        = doc.GetElement(el.GetTypeId())
+        tprm       = sym.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        type_name  = tprm.AsString().strip() if tprm and tprm.AsString() else ""
+        type_label = "[{0}][ID:{1}]".format(type_name, el.Id.IntegerValue)
+        fam_prm    = sym.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
+        fam        = fam_prm.AsString().strip() if fam_prm and fam_prm.AsString() else ""
+        prefix_str = "{0} {1}".format(fam, type_label)
+
+        # Controllo tf_ vs regole (come prima)
+        for p in el.Parameters:
+            pname_tf = p.Definition.Name
+            if pname_tf.startswith("tf_"):
+                base = pname_tf[3:]
+                if base in common_params:
+                    continue
+                if base not in rule_names:
+                    debug_log.append("{0} WARNING: '{1}' Parametro non presente in Regole Mappatura Parametri".format(prefix_str, pname_tf))
+
+        # Filtra famiglie AP
+        if not fam.startswith("AP"):
+            debug_log.append("{0} Skip: family name '{1}' non AP".format(prefix_str, fam))
+            continue
+
+        # Verifica codice SAP
+        sap_val = get_param_as_string(el.LookupParameter("NP259_codice_sap"))
+        if not sap_val:
+            debug_log.append("{0} WARNING: NP259_codice_sap mancante".format(prefix_str))
+            continue
+
+        # Applicazione regole
+        for rule in param_rules:
+            typ, pname = rule[0], rule[1]
+            prm = el.LookupParameter(pname)
             if prm is None or prm.IsReadOnly:
+                debug_log.append("{0} WARNING {1}: Parametro non presente in Revit".format(prefix_str, pname))
+                continue
+            has_tf = el.LookupParameter("tf_{0}".format(pname)) or sym.LookupParameter("tf_{0}".format(pname))
+            if not has_tf:
+                debug_log.append("{0} Skip {1}: tf_ parameter not defined".format(prefix_str, pname))
                 continue
 
-            # --- (RIMOSSA) N/C: ora ignorata ---
-            if code == "N/C":
-                # Ignora: non scrive, non conta, nessun warning
-                continue
+            val = None
 
-            # C (costante)
-            if code == "C":
-                v = _val_to_str(desc)
-                prm.Set(v)
-                res_params[tgt] = v
-                continue
-
-            # X (lookup su foglio GASD dichiarato in descrizione: DN match)
-            if code == "X":
-                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
-                msht = re.search(r'foglio\s+"([^"]+)"', desc)
-                if mcol and msht:
-                    sht = dn_lookup.get(msht.group(1), msht.group(1))
-                    if sht not in cache:
-                        cache[sht] = _read_cols(excel_path, sht)
-                    data = cache[sht]
-                    if dn_cache is None:
-                        dn_cache = _get_dn(el)
-                    if dn_cache is None:
-                        warnings.append((tgt, "DN non trovato"))
-                        continue
-                    # nel tuo file le DN stanno in data[1] (2ª colonna)
-                    colDN = data[1]
-                    row = None
-                    for irow in range(1, len(colDN)):
-                        if _first_number(colDN[irow]) == dn_cache:
-                            row = irow
+            # ----- REGOLE ESISTENTI -----
+            if typ == "W":
+                _,_,prefix,sheet,idx = rule
+                rows = data_by_sheet.get(sheet, [])
+                if sheet == "Report" and idx == col_letter_to_index('EE'):
+                    dz = col_letter_to_index('DZ')
+                    for code, rv in rows:
+                        if dz < len(rv) and rv[dz].upper().startswith(prefix):
+                            val = rv[idx] if idx < len(rv) else None
                             break
-                    if row is None:
-                        warnings.append((tgt, "DN " + str(dn_cache) + " non in " + sht))
-                        continue
-                    idx = col_letter_to_index(mcol.group(1))
-                    if idx < len(data) and row < len(data[idx]):
-                        val = data[idx][row]
-                        vstr = _val_to_str(val)
-                        prm.Set(vstr)
-                        res_params[tgt] = vstr
-                continue
+                else:
+                    for code, rv in rows:
+                        if code == sap_val and idx < len(rv):
+                            val = rv[idx]
+                            break
 
-            # Z (copia BuiltInParameter indicato in chiaro nella descrizione)
-            if code == "Z":
-                try:
-                    bip = getattr(BuiltInParameter, desc)
-                    src = el.get_Parameter(bip)
-                except:
-                    src = None
-                if src:
-                    vstr = _val_to_str(_param_to_str(src))
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
-                continue
+            elif typ == "C":
+                val = rule[2]
 
-            # G (segmento titolo progetto)
-            if code == "G":
-                keys = re.findall(r'"([^"]+)"', desc)
-                vals = re.findall(r"\(([^)]+)\)", desc)
-                tv = vals[0].strip() if vals else ""
-                fv = vals[1].strip() if len(vals) > 1 else ""
-                chosen = tv if segG in keys else fv
-                vstr = _val_to_str(chosen)
-                prm.Set(vstr)
-                res_params[tgt] = vstr
-                continue
+            elif typ == "D":
+                names, dval = rule[2], rule[3]
+                if any(fam.startswith(n) for n in names):
+                    val = dval
 
-            # K (NUOVA) -> due opzioni separate da ';' in base a offset < 0
-            if code == "K":
-                left, right = "", ""
-                parts_k = desc.split(";", 1)
-                if len(parts_k) >= 1:
-                    left = parts_k[0].strip()
-                if len(parts_k) == 2:
-                    right = parts_k[1].strip()
-                elev = None
-                try:
-                    off = el.get_Parameter(BuiltInParameter.RBS_OFFSET_PARAM)
-                    if off and off.StorageType == StorageType.Double:
-                        elev = off.AsDouble()  # feet; confronto solo segno
-                except:
-                    elev = None
-                choice = (left or right) if (elev is not None and elev < 0.0) else (right or left)
-                if choice != "":
-                    vstr = _val_to_str(choice)
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
-                continue
+            elif typ == "E":
+                val = "SI" if fam in rule[2] else "NO"
 
-            # J (MODIFICATA) -> Allegato 3, 'colonna X', chiave = prefisso 5 del **TYPE NAME**
-            if code == "J":
-                # carica Allegato 3 la prima volta
+            elif typ == "F":
+                names, v1, v2 = rule[2], rule[3], rule[4]
+                val = v1 if any(fam.startswith(n) for n in names) else v2
+
+            elif typ == "G":
+                names, tv, fv = rule[2], rule[3], rule[4]
+                val = tv if segG in names else fv
+
+            # ----- NUOVE REGOLE -----
+            elif typ == "J":
+                # Allegato 3: prefisso 5 del Family Name
                 if allegato_data is None:
                     try:
-                        allegato_data = _read_cols(allegato3_path, allegato3_sheet)
+                        wb_all = xlrd.open_workbook(ALLEGATO3_PATH)
+                        ws_all = wb_all.sheet_by_name(ALLEGATO3_SHEET)
+                        allegato_data = []
+                        for c in range(ws_all.ncols):
+                            col = []
+                            for r in range(ws_all.nrows):
+                                col.append(ws_all.cell(r, c).value)
+                            allegato_data.append(col)
                     except:
                         allegato_data = None
-                if allegato_data is None:
-                    warnings.append((tgt, "J: impossibile aprire Allegato 3"))
-                    continue
+                if allegato_data is not None:
+                    idx_out = rule[2]
+                    if 0 <= idx_out < len(allegato_data):
+                        prefix5 = (fam[:5] if fam else "").upper()
+                        colA = allegato_data[0] if len(allegato_data) > 0 else []
+                        row = None
+                        for irow in range(1, len(colA)):
+                            if str(colA[irow]).strip().upper() == prefix5:
+                                row = irow
+                                break
+                        if row is not None and row < len(allegato_data[idx_out]):
+                            val = allegato_data[idx_out][row]
 
-                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc or "", re.I)
-                if not mcol:
-                    warnings.append((tgt, "J: 'colonna X' non specificata"))
-                    continue
-                idx_out = col_letter_to_index(mcol.group(1).upper())
-                if idx_out < 0 or idx_out >= len(allegato_data):
-                    warnings.append((tgt, "J: colonna '{}' fuori range".format(mcol.group(1).upper())))
-                    continue
+            elif typ == "K":
+                # due opzioni separate da ';' in base a elevazione/offset < 0
+                desc_k = rule[2] or ""
+                parts_k = desc_k.split(";", 1)
+                left  = parts_k[0].strip() if len(parts_k) >= 1 else ""
+                right = parts_k[1].strip() if len(parts_k) == 2 else ""
+                elev = None
+                # prova INSTANCE_ELEVATION_PARAM, poi RBS_OFFSET_PARAM
+                for bip in (BuiltInParameter.INSTANCE_ELEVATION_PARAM,
+                            BuiltInParameter.RBS_OFFSET_PARAM):
+                    try:
+                        p = el.get_Parameter(bip)
+                        if p and p.StorageType == StorageType.Double:
+                            elev = p.AsDouble()
+                            break
+                    except:
+                        pass
+                choice = (left or right) if (elev is not None and elev < 0.0) else (right or left)
+                val = choice if choice != "" else None
 
-                # >>> prefisso 5 dal TYPE NAME (non dal Family Name)
-                type_name_up = (_get_type_name_pipe(el, doc) or "").upper()
-                prefix5 = type_name_up[:5]
-                if not prefix5:
-                    warnings.append((tgt, "J: prefisso Type Name vuoto"))
-                    continue
+            elif typ == "T":
+                # distanza firmata rispetto al livello matchato PBP
+                if matched_level is not None:
+                    z_lvl = _level_elev_ft(matched_level)
+                    z_el  = _elem_world_z_ft(doc, el)
+                    if z_el is not None and z_lvl is not None:
+                        dz_ft = z_el - z_lvl
+                        # se parametro Double, set in feet, altrimenti stringa mm
+                        if prm.StorageType == StorageType.Double:
+                            try:
+                                prm.Set(dz_ft)
+                                param_count += 1
+                                debug_log.append("{0} T Set {1}: val={2}".format(prefix_str, pname, dz_ft))
+                                continue
+                            except:
+                                pass
+                        dz_mm = _ft_to_mm(dz_ft)
+                        val = _fmt_mm(dz_mm)
 
-                colA = allegato_data[0] if len(allegato_data) > 0 else []
-                row = None
-                for irow in range(1, len(colA)):
-                    if str(colA[irow]).strip().upper() == prefix5:
-                        row = irow
-                        break
-                if row is None:
-                    warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(prefix5)))
-                    continue
-                if row >= len(allegato_data[idx_out]):
-                    warnings.append((tgt, "J: riga {} oltre dati col. {}".format(row, mcol.group(1).upper())))
-                    continue
+            elif typ == "P":
+                # match key (trasformata) con colonna G del CSV; se non matcha -> "N/C"
+                idx_out = rule[2]
+                row = csv_by_key.get(segP)
+                if row and 0 <= idx_out < len(row):
+                    val = row[idx_out]
+                else:
+                    val = "N/C"
 
-                val = allegato_data[idx_out][row]
-                vstr = _val_to_str(val)
-                prm.Set(vstr)
-                res_params[tgt] = vstr
+            elif typ == "N":
+                # rule = ("N", pname, fam_keys, pairs)
+                fam_keys, pairs = rule[2], rule[3]
+                fam_prefix5  = (fam[:5] if fam else "").upper()
+                type_prefix6 = (type_name[:6] if type_name else "").upper()
+
+                # default N/C
+                val = "N/C"
+
+                # match family prefix5 con una delle virgolette
+                if fam_keys and any(fam_prefix5 == k.strip().upper() for k in fam_keys):
+                    # match type prefix6 con una delle quadre
+                    # supporta più alternative nelle quadre separate da | , ; / o spazi
+                    for k, outv in pairs:
+                        alts = [a.strip().upper() for a in re.split(r'[|,;/]+', k) if a.strip()]
+                        if (alts and type_prefix6 in alts) or (not alts and type_prefix6 == k.strip().upper()):
+                            val = outv.strip()
+                            break
+                # else: resta "N/C"
+
+            # ----- scrittura -----
+            if val is None:
+                debug_log.append("{0} {1} Skipped {2}: no rule value".format(prefix_str, typ, pname))
                 continue
 
-            # M (NUOVA) -> mapping da parametro sorgente istanza "SRC" -> (SRC_VAL, OUT_VAL)
-            if code == "M":
-                msrc = re.match(r'\s*"([^"]+)"', desc or "")
-                if not msrc:
-                    warnings.append((tgt, "M: parametro sorgente non specificato"))
-                    continue
-                src_name = msrc.group(1).strip()
-                srcp = el.LookupParameter(src_name)
-                if srcp is None:
-                    warnings.append((tgt, "M: parametro sorgente '{}' non trovato".format(src_name)))
-                    continue
-                src_val = _param_to_str(srcp).strip()
-                chosen = None
-                for pair in re.findall(r"\(([^()]*)\)", desc or ""):
-                    bits = pair.split(",", 1)
-                    if len(bits) >= 2 and src_val == bits[0].strip():
-                        chosen = bits[1].strip()
-                        break
-                if chosen is not None and chosen != "":
-                    vstr = _val_to_str(chosen)
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
-                continue
-    # end for rules
-    t1.Commit()
+            try:
+                prm.Set(val)
+                param_count += 1
+                debug_log.append("{0} {1} Set {2}: val={3}".format(prefix_str, typ, pname, val))
+            except:
+                # tentativo come ValueString (alcuni string param)
+                try:
+                    prm.SetValueString(str(val))
+                    param_count += 1
+                    debug_log.append("{0} {1} SetValueString {2}: val={3}".format(prefix_str, typ, pname, val))
+                except:
+                    debug_log.append("{0} {1} WARNING: set fallita per {2} (val={3})".format(prefix_str, typ, pname, val))
 
-    # STEP 2: regola L (immutata)
-    l_rule = None
-    for r in rules:
-        if r[1] == "L":
-            l_rule = r
-            break
+    trans.Commit()
 
-    if l_rule is not None:
-        target_param, _, rule_desc = l_rule
+except Exception:
+    if trans.GetStatus() == TransactionStatus.Started:
+        trans.RollBack()
+    raise
 
-        # tolgo quadre esterne
-        if rule_desc.startswith("[") and rule_desc.endswith("]"):
-            rule_desc = rule_desc[1:-1].strip()
+# -------- Output HTML (come il tuo, invariato nella struttura) --------
+from pyrevit import script
+output = script.get_output()
+output.print_html("<b>Completato: {0} parametri compilati</b><br>".format(param_count))
 
-        # estraggo il nome del parametro sorgente (tra le prime virgolette)
-        src_match = re.match(r'"([^"]+)"', rule_desc)
-        if not src_match:
-            TaskDialog.Show("Errore", "Parametro sorgente non trovato in regola L.")
-            return
-        source_name = src_match.group(1)
+# Raggruppa e stampa solo i warning “WARNING:” per family name 
+logs_by_family = {}
+for line in debug_log:
+    family = line.split(" ", 1)[0]
+    first_close  = line.find(']')
+    second_close = line.find(']', first_close + 1)
+    if second_close != -1:
+        text = line[second_close + 1 :].strip()
+    else:
+        text = line[len(family) :].strip()
+    if not text.startswith("WARNING:"):
+        continue
+    logs_by_family.setdefault(family, []).append(text)
 
-        # divido per '-' ogni condizione
-        partsL = rule_desc.split("-")
-        cond_map = {}
-        for part in partsL:
-            part = part.strip()
-            start = part.find("[")
-            end   = part.find("]")
-            if start >= 0 and end > start:
-                key = part[:start].strip().lower()
-                val = part[start+1:end].strip()
-                cond_map[key] = val
-
-        default_val = cond_map.get("default", "")
-
-        t2 = Transaction(doc, "Mappa Barre Step2")
-        t2.Start()
-        for el in pipes:
-            prm_l = el.LookupParameter(target_param)
-            if prm_l is None or prm_l.IsReadOnly:
-                continue
-            srcp = el.LookupParameter(source_name)
-            val_key = ""
-            if srcp and srcp.AsString() is not None:
-                val_key = srcp.AsString().strip().lower()
-            chosen = cond_map.get(val_key, default_val)
-            if chosen != "":
-                prm_l.Set(chosen)
-                res_params[target_param] = chosen
-        t2.Commit()
-
-    msg = "Parametri aggiornati: {}".format(len(res_params))
-    if warnings:
-        msg += "\nWarning:"
-        for p, w in warnings:
-            msg += "\n- {}: {}".format(p, w)
-
-    TaskDialog.Show("Risultato", msg)
-    
-
-# punto di ingresso pyRevit
-doc = __revit__.ActiveUIDocument.Document
-process_document(doc)
+for family, warnings in logs_by_family.items():
+    output.print_html("<h3 style='font-size:1.5em;'>{0}</h3>".format(family))
+    for w in warnings:
+        output.print_html(
+            "<span style='color:purple;font-weight:bold;font-size:1.5em;'>{0}</span><br>".format(w)
+        )
