@@ -2,11 +2,10 @@
 """
 Compilazione parametri da CI_xxx.xlsx, Regole mappatura e CSV di linea (AP)
 Pipe Accessories + Pipe Fittings (famiglie AP)
-Aggiunge: P (CSV), J (Allegato3), K (nuova), T (come NO033)
 """
 
-__title__ = 'AP mapping (PA + PF)'
-__author__ = 'Valerio Mascia (+GPT)'
+__title__ = 'Accessories\nmapping'
+__author__ = 'Valerio Mascia'
 
 import clr, os, re, xlrd, csv
 from Autodesk.Revit.DB import *
