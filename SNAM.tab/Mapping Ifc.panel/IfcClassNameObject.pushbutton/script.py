@@ -184,4 +184,3 @@ for e in collector:
 t.Commit()
 
 TaskDialog.Show("IFC Mapping", "Tutti i parametri IFC compilati correttamente.")
-
