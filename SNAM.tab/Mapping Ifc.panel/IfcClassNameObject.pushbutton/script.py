@@ -127,7 +127,7 @@ for e in collector:
     target_ifcname = None
 
     # Regola SNAM_
-    if head5_type.startswith("SNAM_") or head5_type.startswith("Tubaz") :
+    if head5_type.startswith("SNAM_") or head5_type.startswith("Tubaz") or head5_type.startswith("BARRE") :
         for a, b in rules_ifcname:
             if b == "BARRE":
                 target_ifcname = a
@@ -184,3 +184,4 @@ for e in collector:
 t.Commit()
 
 TaskDialog.Show("IFC Mapping", "Tutti i parametri IFC compilati correttamente.")
+
