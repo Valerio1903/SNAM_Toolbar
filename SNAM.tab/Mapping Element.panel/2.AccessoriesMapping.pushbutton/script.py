@@ -4,7 +4,7 @@ Compilazione parametri da CI_xxx.xlsx, Regole mappatura e CSV di linea (AP)
 Pipe Accessories + Pipe Fittings (famiglie AP)
 """
 
-__title__ = 'Accessories\nmapping'
+__title__ = 'AP_Accessories\nmapping'
 __author__ = 'Valerio Mascia'
 
 import clr, os, re, xlrd, csv
@@ -133,6 +133,10 @@ ALLEGATO3_SHEET = "Elenco AP"
 # CSV per P
 P_CSV_PATH      = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\DQ_MGRC2_P_LIN_FP_LINEA.csv"
 P_MATCH_COL_G   = col_letter_to_index('G')  # 0-based
+
+# tf_ da ignorare nei WARNING perché non fanno parte dei parametri da compilare
+TF_EXCLUDE_FROM_WARN = {"Long Name", "IfcObjectType", "IFC Name"}
+
 
 # ---------- Setup documento ----------
 doc = __revit__.ActiveUIDocument.Document
@@ -267,6 +271,10 @@ for i in range(1, ws_map.nrows):
         # pairs = [("TYPE6", "VAL"), ...]
         param_rules.append(("N", pname, fam_keys, pairs))
 
+    elif mode == "R":
+        # Leggi direttamente dal parametro tf_<pname>
+        param_rules.append(("R", pname))
+
 
 # Prepara dati per W
 data_by_sheet = {}
@@ -358,6 +366,9 @@ try:
             pname_tf = p.Definition.Name
             if pname_tf.startswith("tf_"):
                 base = pname_tf[3:]
+                # ESCLUSIONE: questi tf_ non vanno riportati nell'output finale
+                if base in TF_EXCLUDE_FROM_WARN:
+                    continue
                 if base in common_params:
                     continue
                 if base not in rule_names:
@@ -504,10 +515,8 @@ try:
                 fam_keys, pairs = rule[2], rule[3]
                 fam_prefix5  = (fam[:5] if fam else "").upper()
                 type_prefix6 = (type_name[:6] if type_name else "").upper()
-
                 # default N/C
                 val = "N/C"
-
                 # match family prefix5 con una delle virgolette
                 if fam_keys and any(fam_prefix5 == k.strip().upper() for k in fam_keys):
                     # match type prefix6 con una delle quadre
@@ -518,6 +527,17 @@ try:
                             val = outv.strip()
                             break
                 # else: resta "N/C"
+
+
+            elif typ == "R":
+                # Copia il valore da tf_<pname> (istanza -> tipo come fallback)
+                src_name = "tf_{0}".format(pname)
+                src_prm = el.LookupParameter(src_name) or sym.LookupParameter(src_name)
+                if src_prm:
+                    val = get_param_as_string(src_prm)
+                else:
+                    val = None
+
 
             # ----- scrittura -----
             if val is None:
