@@ -185,10 +185,30 @@ def process_document(doc):
                     src = el.get_Parameter(bip)
                 except:
                     src = None
+
                 if src:
-                    vstr = _val_to_str(_param_to_str(src))
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
+                    vstr = None
+                    try:
+                        st = src.StorageType
+                        if st == StorageType.Double:
+                            # Prende il numero "pulito" dalla stringa formattata (es. "1400 mm" -> 1400)
+                            n = _first_number(src.AsValueString() or "")
+                            if n is None:
+                                # Fallback (feet): usato solo se AsValueString non dà numeri
+                                n = src.AsDouble()
+                            vstr = _val_to_str(n)  # "700" oppure "67.5"
+                        elif st == StorageType.Integer:
+                            vstr = _val_to_str(src.AsInteger())  # "700", "1400", ...
+                        else:
+                            # Stringhe: prova a estrarre il primo numero utile
+                            n = _first_number(src.AsString() or "")
+                            vstr = _val_to_str(n) if n is not None else (src.AsString() or "").strip()
+                    except:
+                        vstr = None
+
+                    if vstr is not None and vstr != "":
+                        prm.Set(vstr)
+                        res_params[tgt] = vstr
                 continue
 
             # G (segmento titolo progetto)
