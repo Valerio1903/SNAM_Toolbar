@@ -399,21 +399,40 @@ try:
 
             val = None
 
-            # ----- REGOLE ESISTENTI -----
+
+            
             if typ == "W":
-                _,_,prefix,sheet,idx = rule
+                _, _, prefix, sheet, idx = rule
                 rows = data_by_sheet.get(sheet, [])
+                val = None
+
+                # --- Caso speciale: foglio "Report" + colonna EE ---
+                # Qui lo stesso SAP ha più righe, una per ogni parametro CAxxx.
+                # Serve trovare la riga con SAP uguale E DZ che identifica il parametro (prefix = "CA002", "CA008", ...).
                 if sheet == "Report" and idx == col_letter_to_index('EE'):
                     dz = col_letter_to_index('DZ')
                     for code, rv in rows:
-                        if dz < len(rv) and rv[dz].upper().startswith(prefix):
-                            val = rv[idx] if idx < len(rv) else None
-                            break
+                        if code != sap_val:
+                            continue
+                        # DZ può contenere "CA002", "CA002 - ..." ecc.: usa startswith
+                        dz_val = str(rv[dz] or "").strip().upper() if dz < len(rv) else ""
+                        if dz_val.startswith(prefix):
+                            if idx < len(rv):
+                                candidate = rv[idx]
+                                if candidate is not None and str(candidate).strip() != "":
+                                    val = candidate
+                            break  # trovata la riga giusta per questo parametro; esci
+
+                # --- Caso generale: match per SAP (1 riga per SAP) ---
                 else:
                     for code, rv in rows:
-                        if code == sap_val and idx < len(rv):
-                            val = rv[idx]
+                        if code == sap_val:
+                            if idx < len(rv):
+                                candidate = rv[idx]
+                                if candidate is not None and str(candidate).strip() != "":
+                                    val = candidate
                             break
+
 
             elif typ == "C":
                 val = rule[2]
