@@ -10,6 +10,7 @@ import clr
 import os
 import re
 import xlrd
+import math
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as NetList
@@ -20,8 +21,11 @@ def col_letter_to_index(letter):
         if c.isalpha():
             idx = idx * 26 + (ord(c.upper()) - ord('A') + 1)
     return idx - 1
+"""Converte lettere di colonna Excel (es. 'A', 'AA') nell'indice zero-based (A=0, B=1, ...)."""
 
 _num = re.compile("[-+]?\d*\.?\d+")
+# Regex per catturare il *primo numero* in una stringa (segno opzionale, parte intera e decimale con punto).
+# N.B.: le virgole decimali vengono gestite dopo sostituendo "," -> "." in _first_number.
 
 def _first_number(txt):
     m = _num.search(str(txt))
@@ -34,6 +38,7 @@ def _first_number(txt):
         except:
             pass
     return None
+"""Estrae il primo numero presente nel testo (supporta virgola decimale), restituendo int se intero, altrimenti float."""
 
 DN_PARAMS = [
     BuiltInParameter.RBS_PIPE_DIAMETER_PARAM,
@@ -48,6 +53,8 @@ def _get_dn(el):
             if num is not None:
                 return int(round(num))
     return None
+"""Ricava il DN del tubo leggendo i parametri diametro (visualizzati), restituisce un intero (arrotondato) o None."""
+
 
 def _param_to_str(prm):
     if prm.StorageType == StorageType.Double:
@@ -58,6 +65,8 @@ def _param_to_str(prm):
     if prm.StorageType == StorageType.Integer:
         return str(prm.AsInteger())
     return (prm.AsString() or "").strip()
+"""Converte un parametro Revit in stringa: Double via AsValueString (o fallback), Integer come stringa, altrimenti AsString."""
+
 
 def _val_to_str(val):
     try:
@@ -67,6 +76,8 @@ def _val_to_str(val):
         return str(n)
     except:
         return str(val)
+"""Converte un valore generico in stringa; se numero, mantiene i decimali quando presenti (es. 5.0 -> '5')."""    
+
 
 def _read_cols(path, sheet):
     wb = xlrd.open_workbook(path)
@@ -78,6 +89,8 @@ def _read_cols(path, sheet):
             col.append(ws.cell(r, c).value)
         cols.append(col)
     return cols
+"""Legge un foglio Excel e restituisce la matrice per colonne: cols[c][r] = cella (riga r, colonna c)."""
+
 
 def _get_type_name_pipe(el, doc):
     try:
@@ -88,6 +101,17 @@ def _get_type_name_pipe(el, doc):
     except:
         pass
     return ""
+"""Restituisce il Type Name dell’elemento pipe (stringa vuota se non disponibile)."""
+
+
+def _format_number_keep_decimals(n):
+    """88.0 -> '88' ; 88.12 -> '88.12' ; niente arrotondamenti ad intero."""
+    try:
+        s = ("{:.6f}".format(float(n))).rstrip("0").rstrip(".")
+        return "0" if s in ("", "-0") else s
+    except:
+        return str(n)
+"""Formatta un numero in stringa senza zeri inutili: 88.0 -> '88'; 88.12 -> '88.12' (massimo 6 decimali)."""
 
 
 def process_document(doc):
@@ -178,37 +202,64 @@ def process_document(doc):
                         res_params[tgt] = vstr
                 continue
 
-            # Z (copia BuiltInParameter indicato in chiaro nella descrizione)
+            # ---- PROCESSO Z (sostituisci SOLO questo blocco) ----
             if code == "Z":
+                # In Excel il BuiltInParameter è senza virgolette
+                src = None
                 try:
-                    bip = getattr(BuiltInParameter, desc)
+                    bip = getattr(BuiltInParameter, (desc or "").strip())
                     src = el.get_Parameter(bip)
                 except:
                     src = None
 
-                if src:
-                    vstr = None
-                    try:
-                        st = src.StorageType
-                        if st == StorageType.Double:
-                            # Prende il numero "pulito" dalla stringa formattata (es. "1400 mm" -> 1400)
-                            n = _first_number(src.AsValueString() or "")
-                            if n is None:
-                                # Fallback (feet): usato solo se AsValueString non dà numeri
-                                n = src.AsDouble()
-                            vstr = _val_to_str(n)  # "700" oppure "67.5"
-                        elif st == StorageType.Integer:
-                            vstr = _val_to_str(src.AsInteger())  # "700", "1400", ...
-                        else:
-                            # Stringhe: prova a estrarre il primo numero utile
-                            n = _first_number(src.AsString() or "")
-                            vstr = _val_to_str(n) if n is not None else (src.AsString() or "").strip()
-                    except:
-                        vstr = None
+                if not src:
+                    warnings.append((tgt, 'Z: BuiltInParameter "{}" non trovato'.format(desc)))
+                    continue
 
-                    if vstr is not None and vstr != "":
-                        prm.Set(vstr)
-                        res_params[tgt] = vstr
+                # I target, sono di testo
+                if prm.StorageType != StorageType.String:
+                    warnings.append((tgt, "Z: il parametro destinazione non è di tipo Testo"))
+                    continue
+
+                # ---- dentro if code == "Z":, sostituisci SOLO la gestione dei Double ----
+
+                s_out = None
+
+                if src.StorageType == StorageType.Double:
+                    # Converti SEMPRE dall'unità interna (feet) ai millimetri,
+                    # ignorando le unità/arrotondamenti della UI
+                    try:
+                        # API nuove
+                        try:
+                            from Autodesk.Revit.DB import UnitTypeId
+                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
+                        except:
+                            # API vecchie
+                            from Autodesk.Revit.DB import DisplayUnitType
+                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
+
+                        s_out = _format_number_keep_decimals(round(mm, 6))  # 88.0 -> "88", 88.9 -> "88.9"
+                    except:
+                        s_out = None
+
+                # se ancora None, prova AsString() (non AsValueString, per evitare arrotondamenti UI)
+                if s_out is None:
+                    s = (src.AsString() or "").strip()
+                    if s:
+                        n = _first_number(s)
+                        if n is not None:
+                            s_out = _format_number_keep_decimals(n)
+
+
+                if not s_out:
+                    warnings.append((tgt, "Z: nessun valore interpretabile dal parametro sorgente"))
+                    continue
+
+                try:
+                    prm.Set(s_out)
+                    res_params[tgt] = s_out
+                except:
+                    warnings.append((tgt, "Z: errore in Set('{}')".format(s_out)))
                 continue
 
             # G (segmento titolo progetto)
