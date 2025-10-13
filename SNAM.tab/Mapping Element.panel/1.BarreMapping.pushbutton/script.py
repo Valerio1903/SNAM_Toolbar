@@ -245,7 +245,9 @@ def process_document(doc):
                     res_params[tgt] = vstr
                 continue
 
-            # J (MODIFICATA) -> Allegato 3, 'colonna X', chiave = prefisso 5 del **TYPE NAME**
+            # J (MODIFICATA) -> Allegato 3, 'colonna X'
+            # Condizione: compila SOLO se TYPE NAME inizia con "BARRE" o "Tubaz" (case-sensitive)
+            # Lookup: la chiave in colonna A è SEMPRE "BARRE"
             if code == "J":
                 # carica Allegato 3 la prima volta
                 if allegato_data is None:
@@ -266,21 +268,22 @@ def process_document(doc):
                     warnings.append((tgt, "J: colonna '{}' fuori range".format(mcol.group(1).upper())))
                     continue
 
-                # >>> prefisso 5 dal TYPE NAME (non dal Family Name)
-                type_name_up = (_get_type_name_pipe(el, doc) or "").upper()
-                prefix5 = type_name_up[:5]
-                if not prefix5:
-                    warnings.append((tgt, "J: prefisso Type Name vuoto"))
+                # >>> Trigger solo se Type Name inizia con "BARRE" o "Tubaz" (case-sensitive)
+                type_name_raw = _get_type_name_pipe(el, doc) or ""
+                if type_name_raw.startswith("BARRE") or type_name_raw.startswith("Tubaz"):
+                    key = "BARRE"  # su Allegato 3 la chiave è sempre BARRE
+                else:
+                    warnings.append((tgt, "J: Type Name non inizia con 'BARRE' o 'Tubaz'"))
                     continue
 
                 colA = allegato_data[0] if len(allegato_data) > 0 else []
                 row = None
                 for irow in range(1, len(colA)):
-                    if str(colA[irow]).strip().upper() == prefix5:
+                    if str(colA[irow]).strip() == key:  # match esatto e case-sensitive
                         row = irow
                         break
                 if row is None:
-                    warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(prefix5)))
+                    warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(key)))
                     continue
                 if row >= len(allegato_data[idx_out]):
                     warnings.append((tgt, "J: riga {} oltre dati col. {}".format(row, mcol.group(1).upper())))
@@ -291,6 +294,8 @@ def process_document(doc):
                 prm.Set(vstr)
                 res_params[tgt] = vstr
                 continue
+
+
 
             # M (NUOVA) -> mapping da parametro sorgente istanza "SRC" -> (SRC_VAL, OUT_VAL)
             if code == "M":
