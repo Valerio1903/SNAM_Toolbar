@@ -142,7 +142,7 @@ except Exception as e:
     raise SystemExit
 
 # filtra elementi target
-cats = [BuiltInCategory.OST_PipeCurves, BuiltInCategory.OST_PipeFitting, BuiltInCategory.OST_PipeAccessory]
+cats = [BuiltInCategory.OST_PipeCurves, BuiltInCategory.OST_PipeFitting, BuiltInCategory.OST_PipeAccessory, BuiltInCategory.OST_GenericModel]
 cat_ids = NetList[ElementId]([ElementId(int(c)) for c in cats])
 elems = FilteredElementCollector(doc)\
     .WherePasses(ElementMulticategoryFilter(cat_ids))\
