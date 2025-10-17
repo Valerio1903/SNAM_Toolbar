@@ -120,6 +120,26 @@ def _elem_world_z_ft(doc, el):
         pass
     return None
 
+_num = re.compile(r"[-+]?\d*\.?\d+")
+
+def _first_number(txt):
+    m = _num.search(str(txt))
+    if m:
+        try:
+            v = float(m.group().replace(",", "."))
+            return int(v) if v.is_integer() else v
+        except:
+            pass
+    return None
+
+def _format_number_keep_decimals(n):
+    try:
+        s = ("{:.6f}".format(float(n))).rstrip("0").rstrip(".")
+        return "0" if s in ("", "-0") else s
+    except:
+        return str(n)
+
+
 # ---------- PATHS e CONFIG ----------
 MAP_RULES_EXCEL = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
 CI_FOLDER        = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri"
@@ -274,6 +294,13 @@ for i in range(1, ws_map.nrows):
     elif mode == "R":
         # Leggi direttamente dal parametro tf_<pname>
         param_rules.append(("R", pname))
+
+    elif mode == "Y":
+        # In descrizione c'è il NOME del parametro (senza virgolette)
+        pname_src = str(ws_map.cell(i, 3).value or "").strip()
+        if pname_src:
+            param_rules.append(("Y", pname, pname_src))
+
 
 
 # Prepara dati per W
@@ -556,6 +583,56 @@ try:
                     val = get_param_as_string(src_prm)
                 else:
                     val = None
+            
+            
+            elif typ == "Y":
+                # rule = ("Y", target_param_name, source_param_name)
+                src_name = rule[2]
+                src = el.LookupParameter(src_name) or sym.LookupParameter(src_name)
+                if not src:
+                    debug_log.append("{0} Y WARNING: parametro sorgente '{1}' non trovato".format(prefix_str, src_name))
+                    continue
+
+                if prm.StorageType != StorageType.String:
+                    debug_log.append("{0} Y WARNING: il parametro destinazione '{1}' non è di tipo Testo".format(prefix_str, pname))
+                    continue
+
+                s_out = None
+
+                if src.StorageType == StorageType.Double:
+                    # Come Z: converti da internal units a millimetri e formatta senza zeri inutili
+                    try:
+                        try:
+                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
+                        except:
+                            from Autodesk.Revit.DB import DisplayUnitType
+                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
+                        s_out = _format_number_keep_decimals(round(mm, 6))
+                    except:
+                        s_out = None
+                else:
+                    # fallback: usa AsString e prova a prendere il primo numero
+                    s = (src.AsString() or "").strip()
+                    if s:
+                        n = _first_number(s)
+                        if n is not None:
+                            s_out = _format_number_keep_decimals(n)
+
+                if not s_out:
+                    debug_log.append("{0} Y WARNING: valore non interpretabile da '{1}'".format(prefix_str, src_name))
+                    continue
+
+                try:
+                    prm.Set(s_out)
+                    param_count += 1
+                    debug_log.append("{0} Y Set {1}: val={2}".format(prefix_str, pname, s_out))
+                except:
+                    try:
+                        prm.SetValueString(str(s_out))
+                        param_count += 1
+                        debug_log.append("{0} Y SetValueString {1}: val={2}".format(prefix_str, pname, s_out))
+                    except:
+                        debug_log.append("{0} Y WARNING: set fallita per {1} (val={2})".format(prefix_str, pname, s_out))
 
 
             # ----- scrittura -----
