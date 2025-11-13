@@ -139,6 +139,29 @@ def _format_number_keep_decimals(n):
     except:
         return str(n)
 
+# --- Date helper per regola P (come Placeholders v3) ---
+IT_MONTHS = {
+    'gen':'01','feb':'02','mar':'03','apr':'04','mag':'05','giu':'06',
+    'lug':'07','ago':'08','set':'09','ott':'10','nov':'11','dic':'12'
+}
+_DATE_RE = re.compile(r"^(\d{1,2})[-/\.](\w{3})[-/\.](\d{2,4})$", re.I)
+
+def to_date_ddmmyyyy(s):
+    m = _DATE_RE.match((s or "").strip())
+    if not m:
+        return s
+    d = int(m.group(1))
+    mon = (m.group(2) or "").strip().lower()[:3]
+    y = m.group(3)
+    mm = IT_MONTHS.get(mon)
+    if not mm:
+        return s
+    if len(y) == 2:
+        yy = int(y)
+        y4 = 2000 + yy if yy < 50 else 1900 + yy
+    else:
+        y4 = int(y)
+    return ("%02d%s%04d" % (d, mm, y4))
 
 # ---------- PATHS e CONFIG ----------
 MAP_RULES_EXCEL = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\Regole mappatura per Revit_2Dto6D.xlsx"
@@ -548,11 +571,22 @@ try:
                         val = _fmt_mm(dz_mm)
 
             elif typ == "P":
-                # match key (trasformata) con colonna G del CSV; se non matcha -> "N/C"
+                # match key (trasformata) con colonna G del CSV
                 idx_out = rule[2]
                 row = csv_by_key.get(segP)
                 if row and 0 <= idx_out < len(row):
-                    val = row[idx_out]
+                    cand = row[idx_out]
+                    # vuoto -> "N/C"
+                    if cand is None or str(cand).strip() == '':
+                        val = "N/C"
+                    else:
+                        s = str(cand).strip()
+                        # 'Esercizio' -> 'Operativo'
+                        if s.lower() == 'esercizio':
+                            s = 'Operativo'
+                        # converti "27-feb-17" -> "27022017"
+                        s = to_date_ddmmyyyy(s)
+                        val = s
                 else:
                     val = "N/C"
 
