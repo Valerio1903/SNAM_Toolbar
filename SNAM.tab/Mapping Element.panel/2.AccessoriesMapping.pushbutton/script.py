@@ -411,6 +411,11 @@ try:
         fam        = fam_prm.AsString().strip() if fam_prm and fam_prm.AsString() else ""
         prefix_str = "{0} {1}".format(fam, type_label)
 
+        if not fam.startswith("AP"):
+            # opzionale: puoi non loggare nulla così non “inquina” l’output
+            # debug_log.append("{0} Skip: family name '{1}' non AP".format(prefix_str, fam))
+            continue
+
         # Controllo tf_ vs regole (come prima)
         for p in el.Parameters:
             pname_tf = p.Definition.Name
@@ -459,19 +464,46 @@ try:
                 # --- Caso speciale: foglio "Report" + colonna EE ---
                 # Qui lo stesso SAP ha più righe, una per ogni parametro CAxxx.
                 # Serve trovare la riga con SAP uguale E DZ che identifica il parametro (prefix = "CA002", "CA008", ...).
+                # Se DZ è tutta vuota -> match su EA e valore da EG
                 if sheet == "Report" and idx == col_letter_to_index('EE'):
                     dz = col_letter_to_index('DZ')
+                    ea = col_letter_to_index('EA')
+                    eg = col_letter_to_index('EG')
+
+                    # verifica se in DZ esiste almeno un valore non vuoto (per le righe del SAP corrente)
+                    dz_has_any = False
                     for code, rv in rows:
                         if code != sap_val:
                             continue
-                        # DZ può contenere "CA002", "CA002 - ..." ecc.: usa startswith
-                        dz_val = str(rv[dz] or "").strip().upper() if dz < len(rv) else ""
-                        if dz_val.startswith(prefix):
-                            if idx < len(rv):
-                                candidate = rv[idx]
-                                if candidate is not None and str(candidate).strip() != "":
-                                    val = candidate
-                            break  # trovata la riga giusta per questo parametro; esci
+                        dz_val_chk = (rv[dz] if dz < len(rv) else '')
+                        if str(dz_val_chk).strip() != '':
+                            dz_has_any = True
+                            break
+
+                    if dz_has_any:
+                        # Comportamento attuale: match su DZ e valore da EE
+                        for code, rv in rows:
+                            if code != sap_val:
+                                continue
+                            dz_val = str(rv[dz] if dz < len(rv) else '').upper().strip()
+                            if dz_val.startswith(prefix):
+                                if idx < len(rv):
+                                    candidate = rv[idx]
+                                    if candidate is not None and str(candidate).strip() != "":
+                                        val = candidate
+                                break
+                    else:
+                        # Eccezione: DZ tutta vuota -> match su EA e valore da EG
+                        for code, rv in rows:
+                            if code != sap_val:
+                                continue
+                            ea_val = str(rv[ea] if ea < len(rv) else '').upper().strip()
+                            if ea_val.startswith(prefix):
+                                if eg < len(rv):
+                                    candidate = rv[eg]
+                                    if candidate is not None and str(candidate).strip() != "":
+                                        val = candidate
+                                break
 
                 # --- Caso generale: match per SAP (1 riga per SAP) ---
                 else:
