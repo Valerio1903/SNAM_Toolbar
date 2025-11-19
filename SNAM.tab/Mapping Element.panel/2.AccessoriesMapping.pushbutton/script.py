@@ -268,6 +268,11 @@ for i in range(1, ws_map.nrows):
         mval  = re.search(r"\(([^\)]+)\)", desc)
         param_rules.append(("D", pname, names, mval.group(1).strip() if mval else ""))
 
+    elif mode == "B":
+        names = re.findall(r'"([^"]+)"', desc)
+        mval  = re.search(r"\(([^\)]+)\)", desc)
+        param_rules.append(("B", pname, names, mval.group(1).strip() if mval else ""))
+
     elif mode == "E":
         param_rules.append(("E", pname, re.findall(r'"([^"]+)"', desc)))
 
@@ -429,11 +434,6 @@ try:
                 if base not in rule_names:
                     debug_log.append("{0} WARNING: '{1}' Parametro non presente in Regole Mappatura Parametri".format(prefix_str, pname_tf))
 
-        # Filtra famiglie AP
-        if not fam.startswith("AP"):
-            debug_log.append("{0} Skip: family name '{1}' non AP".format(prefix_str, fam))
-            continue
-
         # Verifica codice SAP
         sap_val = get_param_as_string(el.LookupParameter("NP259_codice_sap"))
         if not sap_val:
@@ -523,6 +523,11 @@ try:
                 names, dval = rule[2], rule[3]
                 if any(fam.startswith(n) for n in names):
                     val = dval
+
+            elif typ == "B":
+                names, dval = rule[2], rule[3]
+                if any(fam.startswith(n) for n in names):
+                    val = dval if str(dval).strip() != "" else "N/C"
 
             elif typ == "E":
                 val = "SI" if fam in rule[2] else "NO"
@@ -652,54 +657,38 @@ try:
             
             
             elif typ == "Y":
-                # rule = ("Y", target_param_name, source_param_name)
+                # ("Y", target_param_name, source_param_name)
                 src_name = rule[2]
                 src = el.LookupParameter(src_name) or sym.LookupParameter(src_name)
-                if not src:
-                    debug_log.append("{0} Y WARNING: parametro sorgente '{1}' non trovato".format(prefix_str, src_name))
-                    continue
 
                 if prm.StorageType != StorageType.String:
                     debug_log.append("{0} Y WARNING: il parametro destinazione '{1}' non è di tipo Testo".format(prefix_str, pname))
-                    continue
-
-                s_out = None
-
-                if src.StorageType == StorageType.Double:
-                    # Come Z: converti da internal units a millimetri e formatta senza zeri inutili
-                    try:
-                        try:
-                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
-                        except:
-                            from Autodesk.Revit.DB import DisplayUnitType
-                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
-                        s_out = _format_number_keep_decimals(round(mm, 6))
-                    except:
-                        s_out = None
+                    val = "N/C"   # fallback su N/C anche se non-text (verrà probabilmente rifiutato da Revit, ma manteniamo coerenza)
                 else:
-                    # fallback: usa AsString e prova a prendere il primo numero
-                    s = (src.AsString() or "").strip()
-                    if s:
-                        n = _first_number(s)
-                        if n is not None:
-                            s_out = _format_number_keep_decimals(n)
+                    s_out = None
+                    if src:
+                        if src.StorageType == StorageType.Double:
+                            try:
+                                try:
+                                    mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
+                                except:
+                                    from Autodesk.Revit.DB import DisplayUnitType
+                                    mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
+                                s_out = _format_number_keep_decimals(round(mm, 6))
+                            except:
+                                s_out = None
+                        else:
+                            s = (src.AsString() or "").strip()
+                            if s:
+                                n = _first_number(s)
+                                if n is not None:
+                                    s_out = _format_number_keep_decimals(n)
 
-                if not s_out:
-                    debug_log.append("{0} Y WARNING: valore non interpretabile da '{1}'".format(prefix_str, src_name))
-                    continue
-
-                try:
-                    prm.Set(s_out)
-                    param_count += 1
-                    debug_log.append("{0} Y Set {1}: val={2}".format(prefix_str, pname, s_out))
-                except:
-                    try:
-                        prm.SetValueString(str(s_out))
-                        param_count += 1
-                        debug_log.append("{0} Y SetValueString {1}: val={2}".format(prefix_str, pname, s_out))
-                    except:
-                        debug_log.append("{0} Y WARNING: set fallita per {1} (val={2})".format(prefix_str, pname, s_out))
-
+                    if not s_out:
+                        debug_log.append("{0} Y WARNING: valore non interpretabile da '{1}'".format(prefix_str, src_name))
+                        val = "N/C"     # <— fallback richiesto
+                    else:
+                        val = s_out
 
             # ----- scrittura -----
             if val is None:
