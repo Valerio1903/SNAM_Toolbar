@@ -11,6 +11,7 @@ import os
 import re
 import xlrd
 import math
+import csv
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as NetList
@@ -113,11 +114,47 @@ def _format_number_keep_decimals(n):
         return str(n)
 """Formatta un numero in stringa senza zeri inutili: 88.0 -> '88'; 88.12 -> '88.12' (massimo 6 decimali)."""
 
+def _read_csv_rows(path):
+    with open(path, 'rb') as fb:
+        raw = fb.read().decode('utf-8-sig', 'ignore')
+    lines = raw.splitlines()
+    if not lines:
+        return []
+    delim = ';' if lines[0].count(';') >= lines[0].count(',') else ','
+    return [[c.strip() for c in row] for row in csv.reader(lines, delimiter=delim)]
+
+IT_MONTHS = {
+    'gen':'01','feb':'02','mar':'03','apr':'04','mag':'05','giu':'06',
+    'lug':'07','ago':'08','set':'09','ott':'10','nov':'11','dic':'12'
+}
+_DATE_RE = re.compile(r"^(\d{1,2})[-/\.](\w{3})[-/\.](\d{2,4})$", re.I)
+
+def to_date_ddmmyyyy(s):
+    m = _DATE_RE.match((s or "").strip())
+    if not m:
+        return s
+    d = int(m.group(1))
+    mon = (m.group(2) or "").strip().lower()[:3]
+    y   = m.group(3)
+    mm = IT_MONTHS.get(mon)
+    if not mm:
+        return s
+    if len(y) == 2:
+        yy = int(y)
+        y4 = 2000 + yy if yy < 50 else 1900 + yy
+    else:
+        y4 = int(y)
+    return ("%02d%s%04d" % (d, mm, y4))
+
 
 def process_document(doc):
     excel_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Regole mappatura per Revit_2Dto6D.xlsx"
     sheet = "BARRE (CATEGORIA TUBAZIONI)"
     dn_lookup = {"BARRE_GASD": "BARRE_GASD"}
+    # --- Config P (CSV di linea) ---
+    P_CSV_PATH    = r"C:\Users\2Dto6D\OneDrive\Desktop\Techfem_Parametri\DQ_MGRC2_P_LIN_FP_LINEA.csv"
+    P_MATCH_COL_G = col_letter_to_index('G')  # chiave di match
+
 
     # Allegato 3 per la regola J
     allegato3_path = "C:\\Users\\2Dto6D\\OneDrive\\Desktop\\Techfem_Parametri\\Allegato 3 - Classi e mappatura IFC.xlsx"
@@ -139,6 +176,39 @@ def process_document(doc):
         ]))) \
         .WhereElementIsNotElementType() \
         .ToElements()
+
+
+    # --- derivazione chiave P dal titolo (stessa trasformazione degli Accessori)
+    def _transform_ap_key(s):
+        s = s or ""
+        i1 = s.find("_")
+        if i1 >= 0:
+            s = s[:i1] + "/" + s[i1+1:]
+            i2 = s.find("_")
+            if i2 >= 0:
+                s = s[:i2] + "." + s[i2+1:]
+        return s
+
+    title = doc.Title or ""
+    parts_title = title.split('-')
+    # segP è il pezzo tra il 3° e 4° trattino, trasformato
+    segP_raw = parts_title[3] if len(parts_title) > 3 else ""
+    segP = _transform_ap_key(segP_raw)
+
+    # --- leggi CSV e indicizza per colonna G (0-based)
+    csv_by_key = {}
+    try:
+        _rows = _read_csv_rows(P_CSV_PATH)
+        if _rows:
+            gidx = P_MATCH_COL_G
+            for i in range(1, len(_rows)):  # salta header
+                row = _rows[i]
+                if gidx < len(row):
+                    k = row[gidx].strip()
+                    if k:
+                        csv_by_key[k] = row
+    except:
+        csv_by_key = {}
 
     cache = {}
     parts = (doc.Title or "").split("-")
@@ -371,6 +441,42 @@ def process_document(doc):
                     prm.Set(vstr)
                     res_params[tgt] = vstr
                 continue
+            
+
+            # P (CSV di linea come negli Accessori)
+            if code == "P":
+                # In descrizione di Excel è scritto "colonna X"
+                m_col = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
+                if not m_col:
+                    warnings.append((tgt, "P: 'colonna X' non specificata"))
+                    continue
+
+                idx_out = col_letter_to_index(m_col.group(1).upper())
+                row = csv_by_key.get(segP)
+
+                # default N/C se chiave o colonna non disponibili
+                v = "N/C"
+                if row and 0 <= idx_out < len(row):
+                    cand = row[idx_out]
+                    if cand is not None and str(cand).strip() != '':
+                        s = str(cand).strip()
+                        # normalizzazioni come negli Accessori
+                        if s.lower() == 'esercizio':
+                            s = 'Operativo'
+                        s = to_date_ddmmyyyy(s)
+                        v = s
+
+                try:
+                    prm.Set(_val_to_str(v))
+                    res_params[tgt] = _val_to_str(v)
+                except:
+                    try:
+                        prm.SetValueString(_val_to_str(v))
+                        res_params[tgt] = _val_to_str(v)
+                    except:
+                        warnings.append((tgt, "P: errore in Set/SetValueString"))
+                continue
+
     # end for rules
     t1.Commit()
 
