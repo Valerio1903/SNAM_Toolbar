@@ -526,8 +526,15 @@ try:
 
             elif typ == "B":
                 names, dval = rule[2], rule[3]
-                if any(fam.startswith(n) for n in names):
-                    val = dval if str(dval).strip() != "" else "N/C"
+                # match se il Family Name inizia con uno dei prefissi tra virgolette
+                matched = any((fam or "").startswith(n.strip()) for n in names)
+
+                if matched:
+                    # per le AP elencate: usa SEMPRE il valore tra parentesi
+                    val = dval
+                else:
+                    # per TUTTE le altre AP: N/C (il gate tf_ è già attivo sopra)
+                    val = "N/C"
 
             elif typ == "E":
                 val = "SI" if fam in rule[2] else "NO"
