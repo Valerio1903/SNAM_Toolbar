@@ -11,6 +11,7 @@ from pyrevit import revit, DB, script, forms
 doc = revit.doc
 
 official_prefixes = ("CA", "NP", "LC", "VAR")  # prefissi CASE-SENSITIVE
+SKIP_PARAMS = {"NP259_codice_sap"}  # parametri esclusi dalla pulizia
 
 
 def has_content(param):
@@ -30,8 +31,9 @@ def clear_prefixed_params(el, log_list):
     for p in el.Parameters:
         try:
             name = (p.Definition.Name or "").strip()
-            # Salta se non inizia con prefisso, è di sola lettura o vuoto
+            # Salta se non inizia con prefisso, è escluso, è di sola lettura o vuoto
             if (not any(name.startswith(pref) for pref in official_prefixes)
+                    or name in SKIP_PARAMS
                     or p.IsReadOnly
                     or not has_content(p)):
                 continue
