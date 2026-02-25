@@ -80,6 +80,18 @@ def load_placeholder(path, sheets):
                 lookup[str(val).strip()[:5].upper()] = str(val).strip()
     return lookup
 
+def load_im_rules(path, sheet):
+    # IM sheet: col0=codice, col1=IfcName, col3=IfcObjectType
+    workbook = xlrd.open_workbook(path)
+    worksheet = workbook.sheet_by_name(sheet)
+    lookup = {}
+    for row_idx in range(1, worksheet.nrows):
+        code = str(worksheet.cell(row_idx, 0).value or "").strip()
+        ifcname = str(worksheet.cell(row_idx, 1).value or "").strip()
+        if code and ifcname:
+            lookup[code.upper()] = ifcname
+    return lookup
+
 def load_mapper_rules(path, sheets):
     workbook = xlrd.open_workbook(path)
     rules = {}
@@ -101,6 +113,7 @@ collector = FilteredElementCollector(doc)\
 
 # Carica regole Excel (xls con xlrd)
 rules_ifcname = load_ifcname_rules(IFCNAME_EXCEL, IFCNAME_SHEET)
+im_lookup = load_im_rules(IFCNAME_EXCEL, "IM")
 ph_lookup = load_placeholder(PLACE_EXCEL, PLACE_SHEETS)
 map_rules = load_mapper_rules(MAPPER_EXCEL, MAPPER_SHEETS)
 
@@ -122,12 +135,13 @@ for e in collector:
     type_name = type_name or ""
 
     head5_fam = fam_name[:5].upper()
-    head5_type = type_name[:5]
+    head5_type = type_name[:5].upper()
 
     target_ifcname = None
+    is_placeholder = False
 
     # Regola SNAM_
-    if head5_type.startswith("SNAM_") or head5_type.startswith("Tubaz") or head5_type.startswith("BARRE") :
+    if type_name[:5].startswith("SNAM_") or type_name[:5].startswith("Tubaz") or type_name[:5].startswith("BARRE") :
         for a, b in rules_ifcname:
             if b == "BARRE":
                 target_ifcname = a
@@ -157,21 +171,30 @@ for e in collector:
         if matches:
             target_ifcname = max(matches, key=len)
 
-    # Regole FU/SE
-    elif head5_fam in ph_lookup:
-        target_ifcname = ph_lookup[head5_fam]
+    # Regole FU/SE (Generic Model Placeholder - da PLACEHOLDER.xlsx)
+    elif head5_type in ph_lookup:
+        is_placeholder = True
+        target_ifcname = ph_lookup[head5_type]
 
-    # Regola standard Allegato1
+    # Regole IM (Generic Model Placeholder - da IfcName Allegato 1, sheet IM)
+    elif head5_type in im_lookup:
+        is_placeholder = True
+        target_ifcname = im_lookup[head5_type]
+
+    # Regola standard Allegato1: prova prima type_name, poi family_name
     else:
-        target_ifcname = next((a for a, b in rules_ifcname if b == head5_fam), None)
+        target_ifcname = next((a for a, b in rules_ifcname if b == head5_type), None)
+        if not target_ifcname:
+            target_ifcname = next((a for a, b in rules_ifcname if b == head5_fam), None)
 
     if target_ifcname:
         p_ifc = e.LookupParameter(PARAM_IFCNAME)
         if p_ifc and not p_ifc.IsReadOnly:
             p_ifc.Set(target_ifcname)
 
-    # Mapping Allegato3
-    obj_exp = map_rules.get(head5_fam)
+    # Mapping Allegato3: per IM/SE/FU usa type_name, altrimenti family_name
+    mapper_key = head5_type if is_placeholder else head5_fam
+    obj_exp = map_rules.get(mapper_key)
     if obj_exp:
         obj, exp = obj_exp
         p_obj = e.LookupParameter(PARAM_OBJTYPE)
