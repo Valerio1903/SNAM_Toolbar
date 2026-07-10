@@ -121,90 +121,103 @@ map_rules = load_mapper_rules(MAPPER_EXCEL, MAPPER_SHEETS)
 # Transazione
 t = Transaction(doc, "Compila parametri IFC")
 t.Start()
+try:
 
-for e in collector:
-    sym = doc.GetElement(e.GetTypeId())
-    if not sym:
-        continue
+    for e in collector:
+        sym = doc.GetElement(e.GetTypeId())
+        if not sym:
+            continue
 
-    fam_param = sym.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
-    fam_name = fam_param.AsString() if fam_param else ""
-    type_param = sym.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-    type_name = type_param.AsString() if type_param else ""
+        fam_param = sym.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)
+        fam_name = fam_param.AsString() if fam_param else ""
+        type_param = sym.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        type_name = type_param.AsString() if type_param else ""
 
-    fam_name = fam_name or ""
-    type_name = type_name or ""
+        fam_name = fam_name or ""
+        type_name = type_name or ""
 
-    head5_fam = fam_name[:5].upper()
-    head5_type = type_name[:5].upper()
+        head5_fam = fam_name[:5].upper()
+        head5_type = type_name[:5].upper()
 
-    target_ifcname = None
-    is_placeholder = False
+        target_ifcname = None
+        is_placeholder = False
 
-    # Regola SNAM_
-    if type_name[:5].startswith("SNAM_") or type_name[:5].startswith("Tubaz") or type_name[:5].startswith("BARRE") :
-        for a, b in rules_ifcname:
-            if b == "BARRE":
-                target_ifcname = a
-                break
+        # Regola SNAM_
+        if type_name[:5].startswith("SNAM_") or type_name[:5].startswith("Tubaz") or type_name[:5].startswith("BARRE") :
+            for a, b in rules_ifcname:
+                if b == "BARRE":
+                    target_ifcname = a
+                    break
+            if target_ifcname:
+                # guardie None/IsReadOnly: se il parametro condiviso manca
+                # sull'elemento, .Set su None fa saltare tutta la transazione
+                p_ifc = e.LookupParameter(PARAM_IFCNAME)
+                if p_ifc and not p_ifc.IsReadOnly:
+                    p_ifc.Set(target_ifcname)
+                p_obj = e.LookupParameter(PARAM_OBJTYPE)
+                if p_obj and not p_obj.IsReadOnly:
+                    p_obj.Set("IfcFlowSegment")
+                p_exp = e.get_Parameter(PARAM_EXPORT)
+                if p_exp and not p_exp.IsReadOnly:
+                    p_exp.Set("IfcPipeSegmentType")
+            continue
+
+        # Regola NO025
+        if head5_fam == "NO025":
+            p_pre = e.get_Parameter(PARAM_PREDEF)
+            if p_pre and not p_pre.IsReadOnly:
+                p_pre.Set("BEND")
+            target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
+
+        # Regole AP330/AP450 (aggiornato per intercettare nuove diciture)
+        elif fam_name.startswith(("AP330", "AP450")) and (
+            "con_comando_manuale_con_riduttore" in fam_name or
+            "con_comando_manuale_a_leva" in fam_name or
+            "con_comando_manuale_riduttore" in fam_name or
+            "con_comando_manuale_con_chiave_a_T" in fam_name
+        ):
+            # Trova tutte le IFCName presenti nel nome famiglia e seleziona la piu lunga
+            matches = [a for a, _ in rules_ifcname if a.strip() in fam_name]
+            if matches:
+                target_ifcname = max(matches, key=len)
+
+        # Regole FU/SE (Generic Model Placeholder - da PLACEHOLDER.xlsx)
+        elif head5_type in ph_lookup:
+            is_placeholder = True
+            target_ifcname = ph_lookup[head5_type]
+
+        # Regole IM (Generic Model Placeholder - da IfcName Allegato 1, sheet IM)
+        elif head5_type in im_lookup:
+            is_placeholder = True
+            target_ifcname = im_lookup[head5_type]
+
+        # Regola standard Allegato1: prova prima type_name, poi family_name
+        else:
+            target_ifcname = next((a for a, b in rules_ifcname if b == head5_type), None)
+            if not target_ifcname:
+                target_ifcname = next((a for a, b in rules_ifcname if b == head5_fam), None)
+
         if target_ifcname:
-            e.LookupParameter(PARAM_IFCNAME).Set(target_ifcname)
-            e.LookupParameter(PARAM_OBJTYPE).Set("IfcFlowSegment")
-            e.get_Parameter(PARAM_EXPORT).Set("IfcPipeSegmentType")
-        continue
+            p_ifc = e.LookupParameter(PARAM_IFCNAME)
+            if p_ifc and not p_ifc.IsReadOnly:
+                p_ifc.Set(target_ifcname)
 
-    # Regola NO025
-    if head5_fam == "NO025":
-        p_pre = e.get_Parameter(PARAM_PREDEF)
-        if p_pre and not p_pre.IsReadOnly:
-            p_pre.Set("BEND")
-        target_ifcname = next((a for a, b in rules_ifcname if b == "NO025"), None)
+        # Mapping Allegato3: per IM/SE/FU usa type_name, altrimenti family_name
+        mapper_key = head5_type if is_placeholder else head5_fam
+        obj_exp = map_rules.get(mapper_key)
+        if obj_exp:
+            obj, exp = obj_exp
+            p_obj = e.LookupParameter(PARAM_OBJTYPE)
+            p_exp = e.get_Parameter(PARAM_EXPORT)
+            if p_obj and not p_obj.IsReadOnly:
+                p_obj.Set(obj)
+            if p_exp and not p_exp.IsReadOnly:
+                p_exp.Set(exp)
 
-    # Regole AP330/AP450 (aggiornato per intercettare nuove diciture)
-    elif fam_name.startswith(("AP330", "AP450")) and (
-        "con_comando_manuale_con_riduttore" in fam_name or
-        "con_comando_manuale_a_leva" in fam_name or
-        "con_comando_manuale_riduttore" in fam_name or
-        "con_comando_manuale_con_chiave_a_T" in fam_name
-    ):
-        # Trova tutte le IFCName presenti nel nome famiglia e seleziona la piu lunga
-        matches = [a for a, _ in rules_ifcname if a.strip() in fam_name]
-        if matches:
-            target_ifcname = max(matches, key=len)
-
-    # Regole FU/SE (Generic Model Placeholder - da PLACEHOLDER.xlsx)
-    elif head5_type in ph_lookup:
-        is_placeholder = True
-        target_ifcname = ph_lookup[head5_type]
-
-    # Regole IM (Generic Model Placeholder - da IfcName Allegato 1, sheet IM)
-    elif head5_type in im_lookup:
-        is_placeholder = True
-        target_ifcname = im_lookup[head5_type]
-
-    # Regola standard Allegato1: prova prima type_name, poi family_name
-    else:
-        target_ifcname = next((a for a, b in rules_ifcname if b == head5_type), None)
-        if not target_ifcname:
-            target_ifcname = next((a for a, b in rules_ifcname if b == head5_fam), None)
-
-    if target_ifcname:
-        p_ifc = e.LookupParameter(PARAM_IFCNAME)
-        if p_ifc and not p_ifc.IsReadOnly:
-            p_ifc.Set(target_ifcname)
-
-    # Mapping Allegato3: per IM/SE/FU usa type_name, altrimenti family_name
-    mapper_key = head5_type if is_placeholder else head5_fam
-    obj_exp = map_rules.get(mapper_key)
-    if obj_exp:
-        obj, exp = obj_exp
-        p_obj = e.LookupParameter(PARAM_OBJTYPE)
-        p_exp = e.get_Parameter(PARAM_EXPORT)
-        if p_obj and not p_obj.IsReadOnly:
-            p_obj.Set(obj)
-        if p_exp and not p_exp.IsReadOnly:
-            p_exp.Set(exp)
-
-t.Commit()
+    t.Commit()
+except:
+    if t.GetStatus() == TransactionStatus.Started:
+        t.RollBack()
+    raise
 
 TaskDialog.Show("IFC Mapping", "Tutti i parametri IFC compilati correttamente.")
