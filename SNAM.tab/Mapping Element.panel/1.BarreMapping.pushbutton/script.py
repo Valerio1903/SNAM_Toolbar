@@ -114,6 +114,19 @@ def _format_number_keep_decimals(n):
         return str(n)
 """Formatta un numero in stringa senza zeri inutili: 88.0 -> '88'; 88.12 -> '88.12' (massimo 6 decimali)."""
 
+def _set_safe(prm, v):
+    """Set con fallback SetValueString: un valore non compatibile non deve
+    far saltare l'intera transazione."""
+    try:
+        prm.Set(v)
+        return True
+    except:
+        try:
+            prm.SetValueString(v)
+            return True
+        except:
+            return False
+
 def _read_csv_rows(path):
     with open(path, 'rb') as fb:
         raw = fb.read().decode('utf-8-sig', 'ignore')
@@ -219,266 +232,277 @@ def process_document(doc):
     # STEP 1 (tutte le regole eccetto L)
     t1 = Transaction(doc, "Mappa Barre Step1")
     t1.Start()
-    for el in pipes:
-        dn_cache = None
-        for tgt, code, desc in rules:
-            if code == "L":
-                continue
-            prm = el.LookupParameter(tgt)
-            if prm is None or prm.IsReadOnly:
-                continue
+    try:
+        for el in pipes:
+            dn_cache = None
+            for tgt, code, desc in rules:
+                if code == "L":
+                    continue
+                prm = el.LookupParameter(tgt)
+                if prm is None or prm.IsReadOnly:
+                    continue
 
-            # --- (RIMOSSA) N/C: ora ignorata ---
-            if code == "N/C":
-                # Ignora: non scrive, non conta, nessun warning
-                continue
+                # --- (RIMOSSA) N/C: ora ignorata ---
+                if code == "N/C":
+                    # Ignora: non scrive, non conta, nessun warning
+                    continue
 
-            # C (costante)
-            if code == "C":
-                v = _val_to_str(desc)
-                prm.Set(v)
-                res_params[tgt] = v
-                continue
+                # C (costante)
+                if code == "C":
+                    v = _val_to_str(desc)
+                    _set_safe(prm, v)
+                    res_params[tgt] = v
+                    continue
 
-            # X (lookup su foglio GASD dichiarato in descrizione: DN match)
-            if code == "X":
-                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
-                msht = re.search(r'foglio\s+"([^"]+)"', desc)
-                if mcol and msht:
-                    sht = dn_lookup.get(msht.group(1), msht.group(1))
-                    if sht not in cache:
-                        cache[sht] = _read_cols(excel_path, sht)
-                    data = cache[sht]
-                    if dn_cache is None:
-                        dn_cache = _get_dn(el)
-                    if dn_cache is None:
-                        warnings.append((tgt, "DN non trovato"))
+                # X (lookup su foglio GASD dichiarato in descrizione: DN match)
+                if code == "X":
+                    mcol = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
+                    msht = re.search(r'foglio\s+"([^"]+)"', desc)
+                    if mcol and msht:
+                        sht = dn_lookup.get(msht.group(1), msht.group(1))
+                        if sht not in cache:
+                            try:
+                                cache[sht] = _read_cols(excel_path, sht)
+                            except:
+                                cache[sht] = []
+                        data = cache[sht]
+                        if not data:
+                            warnings.append((tgt, "X: foglio '{}' non leggibile".format(sht)))
+                            continue
+                        if dn_cache is None:
+                            dn_cache = _get_dn(el)
+                        if dn_cache is None:
+                            warnings.append((tgt, "DN non trovato"))
+                            continue
+                        # nel tuo file le DN stanno in data[1] (2ª colonna)
+                        colDN = data[1]
+                        row = None
+                        for irow in range(1, len(colDN)):
+                            if _first_number(colDN[irow]) == dn_cache:
+                                row = irow
+                                break
+                        if row is None:
+                            warnings.append((tgt, "DN " + str(dn_cache) + " non in " + sht))
+                            continue
+                        idx = col_letter_to_index(mcol.group(1))
+                        if idx < len(data) and row < len(data[idx]):
+                            val = data[idx][row]
+                            vstr = _val_to_str(val)
+                            _set_safe(prm, vstr)
+                            res_params[tgt] = vstr
+                    continue
+
+                # ---- PROCESSO Z (sostituisci SOLO questo blocco) ----
+                if code == "Z":
+                    # In Excel il BuiltInParameter è senza virgolette
+                    src = None
+                    try:
+                        bip = getattr(BuiltInParameter, (desc or "").strip())
+                        src = el.get_Parameter(bip)
+                    except:
+                        src = None
+
+                    if not src:
+                        warnings.append((tgt, 'Z: BuiltInParameter "{}" non trovato'.format(desc)))
                         continue
-                    # nel tuo file le DN stanno in data[1] (2ª colonna)
-                    colDN = data[1]
+
+                    # I target, sono di testo
+                    if prm.StorageType != StorageType.String:
+                        warnings.append((tgt, "Z: il parametro destinazione non è di tipo Testo"))
+                        continue
+
+                    # ---- dentro if code == "Z":, sostituisci SOLO la gestione dei Double ----
+
+                    s_out = None
+
+                    if src.StorageType == StorageType.Double:
+                        # Converti SEMPRE dall'unità interna (feet) ai millimetri,
+                        # ignorando le unità/arrotondamenti della UI
+                        try:
+                            # API nuove
+                            try:
+                                from Autodesk.Revit.DB import UnitTypeId
+                                mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
+                            except:
+                                # API vecchie
+                                from Autodesk.Revit.DB import DisplayUnitType
+                                mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
+
+                            s_out = _format_number_keep_decimals(round(mm, 6))  # 88.0 -> "88", 88.9 -> "88.9"
+                        except:
+                            s_out = None
+
+                    # se ancora None, prova AsString() (non AsValueString, per evitare arrotondamenti UI)
+                    if s_out is None:
+                        s = (src.AsString() or "").strip()
+                        if s:
+                            n = _first_number(s)
+                            if n is not None:
+                                s_out = _format_number_keep_decimals(n)
+
+
+                    if not s_out:
+                        warnings.append((tgt, "Z: nessun valore interpretabile dal parametro sorgente"))
+                        continue
+
+                    try:
+                        prm.Set(s_out)
+                        res_params[tgt] = s_out
+                    except:
+                        warnings.append((tgt, "Z: errore in Set('{}')".format(s_out)))
+                    continue
+
+                # G (segmento titolo progetto)
+                if code == "G":
+                    keys = re.findall(r'"([^"]+)"', desc)
+                    vals = re.findall(r"\(([^)]+)\)", desc)
+                    tv = vals[0].strip() if vals else ""
+                    fv = vals[1].strip() if len(vals) > 1 else ""
+                    chosen = tv if segG in keys else fv
+                    vstr = _val_to_str(chosen)
+                    _set_safe(prm, vstr)
+                    res_params[tgt] = vstr
+                    continue
+
+                # K (NUOVA) -> due opzioni separate da ';' in base a offset < 0
+                if code == "K":
+                    left, right = "", ""
+                    parts_k = desc.split(";", 1)
+                    if len(parts_k) >= 1:
+                        left = parts_k[0].strip()
+                    if len(parts_k) == 2:
+                        right = parts_k[1].strip()
+                    elev = None
+                    try:
+                        off = el.get_Parameter(BuiltInParameter.RBS_OFFSET_PARAM)
+                        if off and off.StorageType == StorageType.Double:
+                            elev = off.AsDouble()  # feet; confronto solo segno
+                    except:
+                        elev = None
+                    choice = (left or right) if (elev is not None and elev < 0.0) else (right or left)
+                    if choice != "":
+                        vstr = _val_to_str(choice)
+                        _set_safe(prm, vstr)
+                        res_params[tgt] = vstr
+                    continue
+
+                # J (MODIFICATA) -> Allegato 3, 'colonna X'
+                # Condizione: compila SOLO se TYPE NAME inizia con "BARRE" o "Tubaz" (case-sensitive)
+                # Lookup: la chiave in colonna A è SEMPRE "BARRE"
+                if code == "J":
+                    # carica Allegato 3 la prima volta
+                    if allegato_data is None:
+                        try:
+                            allegato_data = _read_cols(allegato3_path, allegato3_sheet)
+                        except:
+                            allegato_data = None
+                    if allegato_data is None:
+                        warnings.append((tgt, "J: impossibile aprire Allegato 3"))
+                        continue
+
+                    mcol = re.search(r"colonna\s+([A-Za-z]+)", desc or "", re.I)
+                    if not mcol:
+                        warnings.append((tgt, "J: 'colonna X' non specificata"))
+                        continue
+                    idx_out = col_letter_to_index(mcol.group(1).upper())
+                    if idx_out < 0 or idx_out >= len(allegato_data):
+                        warnings.append((tgt, "J: colonna '{}' fuori range".format(mcol.group(1).upper())))
+                        continue
+
+                    # >>> Trigger solo se Type Name inizia con "BARRE" o "Tubaz" (case-sensitive)
+                    type_name_raw = _get_type_name_pipe(el, doc) or ""
+                    if type_name_raw.startswith("BARRE") or type_name_raw.startswith("Tubaz"):
+                        key = "BARRE"  # su Allegato 3 la chiave è sempre BARRE
+                    else:
+                        warnings.append((tgt, "J: Type Name non inizia con 'BARRE' o 'Tubaz'"))
+                        continue
+
+                    colA = allegato_data[0] if len(allegato_data) > 0 else []
                     row = None
-                    for irow in range(1, len(colDN)):
-                        if _first_number(colDN[irow]) == dn_cache:
+                    for irow in range(1, len(colA)):
+                        if str(colA[irow]).strip() == key:  # match esatto e case-sensitive
                             row = irow
                             break
                     if row is None:
-                        warnings.append((tgt, "DN " + str(dn_cache) + " non in " + sht))
+                        warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(key)))
                         continue
-                    idx = col_letter_to_index(mcol.group(1))
-                    if idx < len(data) and row < len(data[idx]):
-                        val = data[idx][row]
-                        vstr = _val_to_str(val)
-                        prm.Set(vstr)
+                    if row >= len(allegato_data[idx_out]):
+                        warnings.append((tgt, "J: riga {} oltre dati col. {}".format(row, mcol.group(1).upper())))
+                        continue
+
+                    val = allegato_data[idx_out][row]
+                    vstr = _val_to_str(val)
+                    _set_safe(prm, vstr)
+                    res_params[tgt] = vstr
+                    continue
+
+
+
+                # M (NUOVA) -> mapping da parametro sorgente istanza "SRC" -> (SRC_VAL, OUT_VAL)
+                if code == "M":
+                    msrc = re.match(r'\s*"([^"]+)"', desc or "")
+                    if not msrc:
+                        warnings.append((tgt, "M: parametro sorgente non specificato"))
+                        continue
+                    src_name = msrc.group(1).strip()
+                    srcp = el.LookupParameter(src_name)
+                    if srcp is None:
+                        warnings.append((tgt, "M: parametro sorgente '{}' non trovato".format(src_name)))
+                        continue
+                    src_val = _param_to_str(srcp).strip()
+                    chosen = None
+                    for pair in re.findall(r"\(([^()]*)\)", desc or ""):
+                        bits = pair.split(",", 1)
+                        if len(bits) >= 2 and src_val == bits[0].strip():
+                            chosen = bits[1].strip()
+                            break
+                    if chosen is not None and chosen != "":
+                        vstr = _val_to_str(chosen)
+                        _set_safe(prm, vstr)
                         res_params[tgt] = vstr
-                continue
-
-            # ---- PROCESSO Z (sostituisci SOLO questo blocco) ----
-            if code == "Z":
-                # In Excel il BuiltInParameter è senza virgolette
-                src = None
-                try:
-                    bip = getattr(BuiltInParameter, (desc or "").strip())
-                    src = el.get_Parameter(bip)
-                except:
-                    src = None
-
-                if not src:
-                    warnings.append((tgt, 'Z: BuiltInParameter "{}" non trovato'.format(desc)))
                     continue
-
-                # I target, sono di testo
-                if prm.StorageType != StorageType.String:
-                    warnings.append((tgt, "Z: il parametro destinazione non è di tipo Testo"))
-                    continue
-
-                # ---- dentro if code == "Z":, sostituisci SOLO la gestione dei Double ----
-
-                s_out = None
-
-                if src.StorageType == StorageType.Double:
-                    # Converti SEMPRE dall'unità interna (feet) ai millimetri,
-                    # ignorando le unità/arrotondamenti della UI
-                    try:
-                        # API nuove
-                        try:
-                            from Autodesk.Revit.DB import UnitTypeId
-                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), UnitTypeId.Millimeters)
-                        except:
-                            # API vecchie
-                            from Autodesk.Revit.DB import DisplayUnitType
-                            mm = UnitUtils.ConvertFromInternalUnits(src.AsDouble(), DisplayUnitType.DUT_MILLIMETERS)
-
-                        s_out = _format_number_keep_decimals(round(mm, 6))  # 88.0 -> "88", 88.9 -> "88.9"
-                    except:
-                        s_out = None
-
-                # se ancora None, prova AsString() (non AsValueString, per evitare arrotondamenti UI)
-                if s_out is None:
-                    s = (src.AsString() or "").strip()
-                    if s:
-                        n = _first_number(s)
-                        if n is not None:
-                            s_out = _format_number_keep_decimals(n)
-
-
-                if not s_out:
-                    warnings.append((tgt, "Z: nessun valore interpretabile dal parametro sorgente"))
-                    continue
-
-                try:
-                    prm.Set(s_out)
-                    res_params[tgt] = s_out
-                except:
-                    warnings.append((tgt, "Z: errore in Set('{}')".format(s_out)))
-                continue
-
-            # G (segmento titolo progetto)
-            if code == "G":
-                keys = re.findall(r'"([^"]+)"', desc)
-                vals = re.findall(r"\(([^)]+)\)", desc)
-                tv = vals[0].strip() if vals else ""
-                fv = vals[1].strip() if len(vals) > 1 else ""
-                chosen = tv if segG in keys else fv
-                vstr = _val_to_str(chosen)
-                prm.Set(vstr)
-                res_params[tgt] = vstr
-                continue
-
-            # K (NUOVA) -> due opzioni separate da ';' in base a offset < 0
-            if code == "K":
-                left, right = "", ""
-                parts_k = desc.split(";", 1)
-                if len(parts_k) >= 1:
-                    left = parts_k[0].strip()
-                if len(parts_k) == 2:
-                    right = parts_k[1].strip()
-                elev = None
-                try:
-                    off = el.get_Parameter(BuiltInParameter.RBS_OFFSET_PARAM)
-                    if off and off.StorageType == StorageType.Double:
-                        elev = off.AsDouble()  # feet; confronto solo segno
-                except:
-                    elev = None
-                choice = (left or right) if (elev is not None and elev < 0.0) else (right or left)
-                if choice != "":
-                    vstr = _val_to_str(choice)
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
-                continue
-
-            # J (MODIFICATA) -> Allegato 3, 'colonna X'
-            # Condizione: compila SOLO se TYPE NAME inizia con "BARRE" o "Tubaz" (case-sensitive)
-            # Lookup: la chiave in colonna A è SEMPRE "BARRE"
-            if code == "J":
-                # carica Allegato 3 la prima volta
-                if allegato_data is None:
-                    try:
-                        allegato_data = _read_cols(allegato3_path, allegato3_sheet)
-                    except:
-                        allegato_data = None
-                if allegato_data is None:
-                    warnings.append((tgt, "J: impossibile aprire Allegato 3"))
-                    continue
-
-                mcol = re.search(r"colonna\s+([A-Za-z]+)", desc or "", re.I)
-                if not mcol:
-                    warnings.append((tgt, "J: 'colonna X' non specificata"))
-                    continue
-                idx_out = col_letter_to_index(mcol.group(1).upper())
-                if idx_out < 0 or idx_out >= len(allegato_data):
-                    warnings.append((tgt, "J: colonna '{}' fuori range".format(mcol.group(1).upper())))
-                    continue
-
-                # >>> Trigger solo se Type Name inizia con "BARRE" o "Tubaz" (case-sensitive)
-                type_name_raw = _get_type_name_pipe(el, doc) or ""
-                if type_name_raw.startswith("BARRE") or type_name_raw.startswith("Tubaz"):
-                    key = "BARRE"  # su Allegato 3 la chiave è sempre BARRE
-                else:
-                    warnings.append((tgt, "J: Type Name non inizia con 'BARRE' o 'Tubaz'"))
-                    continue
-
-                colA = allegato_data[0] if len(allegato_data) > 0 else []
-                row = None
-                for irow in range(1, len(colA)):
-                    if str(colA[irow]).strip() == key:  # match esatto e case-sensitive
-                        row = irow
-                        break
-                if row is None:
-                    warnings.append((tgt, "J: chiave '{}' non trovata in col. A".format(key)))
-                    continue
-                if row >= len(allegato_data[idx_out]):
-                    warnings.append((tgt, "J: riga {} oltre dati col. {}".format(row, mcol.group(1).upper())))
-                    continue
-
-                val = allegato_data[idx_out][row]
-                vstr = _val_to_str(val)
-                prm.Set(vstr)
-                res_params[tgt] = vstr
-                continue
-
-
-
-            # M (NUOVA) -> mapping da parametro sorgente istanza "SRC" -> (SRC_VAL, OUT_VAL)
-            if code == "M":
-                msrc = re.match(r'\s*"([^"]+)"', desc or "")
-                if not msrc:
-                    warnings.append((tgt, "M: parametro sorgente non specificato"))
-                    continue
-                src_name = msrc.group(1).strip()
-                srcp = el.LookupParameter(src_name)
-                if srcp is None:
-                    warnings.append((tgt, "M: parametro sorgente '{}' non trovato".format(src_name)))
-                    continue
-                src_val = _param_to_str(srcp).strip()
-                chosen = None
-                for pair in re.findall(r"\(([^()]*)\)", desc or ""):
-                    bits = pair.split(",", 1)
-                    if len(bits) >= 2 and src_val == bits[0].strip():
-                        chosen = bits[1].strip()
-                        break
-                if chosen is not None and chosen != "":
-                    vstr = _val_to_str(chosen)
-                    prm.Set(vstr)
-                    res_params[tgt] = vstr
-                continue
             
 
-            # P (CSV di linea come negli Accessori)
-            if code == "P":
-                # In descrizione di Excel è scritto "colonna X"
-                m_col = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
-                if not m_col:
-                    warnings.append((tgt, "P: 'colonna X' non specificata"))
-                    continue
+                # P (CSV di linea come negli Accessori)
+                if code == "P":
+                    # In descrizione di Excel è scritto "colonna X"
+                    m_col = re.search(r"colonna\s+([A-Za-z]+)", desc, re.I)
+                    if not m_col:
+                        warnings.append((tgt, "P: 'colonna X' non specificata"))
+                        continue
 
-                idx_out = col_letter_to_index(m_col.group(1).upper())
-                row = csv_by_key.get(segP)
+                    idx_out = col_letter_to_index(m_col.group(1).upper())
+                    row = csv_by_key.get(segP)
 
-                # default N/C se chiave o colonna non disponibili
-                v = "N/C"
-                if row and 0 <= idx_out < len(row):
-                    cand = row[idx_out]
-                    if cand is not None and str(cand).strip() != '':
-                        s = str(cand).strip()
-                        # normalizzazioni come negli Accessori
-                        if s.lower() == 'esercizio':
-                            s = 'Operativo'
-                        s = to_date_ddmmyyyy(s)
-                        v = s
+                    # default N/C se chiave o colonna non disponibili
+                    v = "N/C"
+                    if row and 0 <= idx_out < len(row):
+                        cand = row[idx_out]
+                        if cand is not None and str(cand).strip() != '':
+                            s = str(cand).strip()
+                            # normalizzazioni come negli Accessori
+                            if s.lower() == 'esercizio':
+                                s = 'Operativo'
+                            s = to_date_ddmmyyyy(s)
+                            v = s
 
-                try:
-                    prm.Set(_val_to_str(v))
-                    res_params[tgt] = _val_to_str(v)
-                except:
                     try:
-                        prm.SetValueString(_val_to_str(v))
+                        prm.Set(_val_to_str(v))
                         res_params[tgt] = _val_to_str(v)
                     except:
-                        warnings.append((tgt, "P: errore in Set/SetValueString"))
-                continue
+                        try:
+                            prm.SetValueString(_val_to_str(v))
+                            res_params[tgt] = _val_to_str(v)
+                        except:
+                            warnings.append((tgt, "P: errore in Set/SetValueString"))
+                    continue
 
-    # end for rules
-    t1.Commit()
+        # end for rules
+        t1.Commit()
+    except:
+        if t1.GetStatus() == TransactionStatus.Started:
+            t1.RollBack()
+        raise
 
     # STEP 2: regola L (immutata)
     l_rule = None
@@ -517,19 +541,24 @@ def process_document(doc):
 
         t2 = Transaction(doc, "Mappa Barre Step2")
         t2.Start()
-        for el in pipes:
-            prm_l = el.LookupParameter(target_param)
-            if prm_l is None or prm_l.IsReadOnly:
-                continue
-            srcp = el.LookupParameter(source_name)
-            val_key = ""
-            if srcp and srcp.AsString() is not None:
-                val_key = srcp.AsString().strip().lower()
-            chosen = cond_map.get(val_key, default_val)
-            if chosen != "":
-                prm_l.Set(chosen)
-                res_params[target_param] = chosen
-        t2.Commit()
+        try:
+            for el in pipes:
+                prm_l = el.LookupParameter(target_param)
+                if prm_l is None or prm_l.IsReadOnly:
+                    continue
+                srcp = el.LookupParameter(source_name)
+                val_key = ""
+                if srcp and srcp.AsString() is not None:
+                    val_key = srcp.AsString().strip().lower()
+                chosen = cond_map.get(val_key, default_val)
+                if chosen != "":
+                    _set_safe(prm_l, chosen)
+                    res_params[target_param] = chosen
+            t2.Commit()
+        except:
+            if t2.GetStatus() == TransactionStatus.Started:
+                t2.RollBack()
+            raise
 
     msg = "Parametri aggiornati: {}".format(len(res_params))
     if warnings:
