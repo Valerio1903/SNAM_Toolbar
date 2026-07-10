@@ -13,7 +13,7 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import (
     ProjectInfo, FilteredElementCollector,
-    Transaction, BuiltInParameter
+    Transaction, TransactionStatus, BuiltInParameter
 )
 from Autodesk.Revit.UI import TaskDialog
 
@@ -41,6 +41,15 @@ def col_letter_to_index(letter):
         if c.isalpha():
             idx = idx*26 + (ord(c.upper()) - ord('A') + 1)
     return idx - 1
+
+def _norm_cell(val):
+    """Normalizza celle Excel per confronti: xlrd legge i numeri come float,
+    quindi 13037 diventa 13037.0 e senza questa pulizia non matcha mai."""
+    if val is None:
+        return ""
+    if isinstance(val, float):
+        return str(int(val)) if val == int(val) else str(val)
+    return str(val).strip()
 
 def leggi_colonne(path, sheet_name):
     wb = xlrd.open_workbook(path)
@@ -88,7 +97,7 @@ colF = cols_allegato[5]
 colJ_idx = col_letter_to_index('J')
 colJ = cols_allegato[colJ_idx]
 
-rows = [i for i in range(1, len(colF)) if str(colF[i]).strip() == codice]
+rows = [i for i in range(1, len(colF)) if _norm_cell(colF[i]) == codice]
 if not rows:
     TaskDialog.Show('Errore', "Codice edificio '" + codice + "' non trovato in Allegato")
     raise SystemExit
@@ -97,7 +106,7 @@ if not rows:
 sel = rows[0]
 if len(rows) > 1:
     for i in rows:
-        if str(colJ[i]).strip() == chiave:
+        if _norm_cell(colJ[i]) == chiave:
             sel = i
             break
 
@@ -179,30 +188,34 @@ proj_info = FilteredElementCollector(doc) \
     .OfClass(ProjectInfo) \
     .FirstElement()
 
-# Transazione per impostare i parametri
-trans = Transaction(doc, 'Set Parametri Progetto')
-trans.Start()
-
-# Imposta solo i built-in via get_Parameter
-for bip, val in param_map.items():
-    prm = proj_info.get_Parameter(bip)
-    if prm and not prm.IsReadOnly:
-        prm.Set(val)
-
 # Imposta tutti gli altri parametri via LookupParameter
 def set_lookup(name, value):
     p = proj_info.LookupParameter(name)
     if p and not p.IsReadOnly:
         p.Set(value)
 
-set_lookup('BuildingDescription',    building_desc)
-set_lookup('IfcDescription',         ifc_desc)
-set_lookup('SiteDescription',        site_desc)
-set_lookup('SiteLandTitleNumber',    site_land_title)
-set_lookup('SiteLongName',           site_long)
-set_lookup('SiteName',               site_name)
-set_lookup('BuildingLongName',       building_long_name)
+# Transazione per impostare i parametri (con rollback in caso di errore)
+trans = Transaction(doc, 'Set Parametri Progetto')
+trans.Start()
+try:
+    # Imposta solo i built-in via get_Parameter
+    for bip, val in param_map.items():
+        prm = proj_info.get_Parameter(bip)
+        if prm and not prm.IsReadOnly:
+            prm.Set(val)
 
-trans.Commit()
+    set_lookup('BuildingDescription',    building_desc)
+    set_lookup('IfcDescription',         ifc_desc)
+    set_lookup('SiteDescription',        site_desc)
+    set_lookup('SiteLandTitleNumber',    site_land_title)
+    set_lookup('SiteLongName',           site_long)
+    set_lookup('SiteName',               site_name)
+    set_lookup('BuildingLongName',       building_long_name)
+
+    trans.Commit()
+except:
+    if trans.GetStatus() == TransactionStatus.Started:
+        trans.RollBack()
+    raise
 
 TaskDialog.Show('Completato', 'Parametri di progetto aggiornati.')
