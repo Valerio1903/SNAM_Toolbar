@@ -68,22 +68,15 @@ def leggi_colonne(path, sheet_name):
         col = [ws.cell(r, c).value for r in range(ws.nrows)]
         cols.append(col)
     return cols
-# (poi, piu avanti, quando leggi i fogli:)
-try:
-    cols_mappe    = leggi_colonne(MAPPE_PATH, SHEET_MAPPE)
-    cols_allegato = leggi_colonne(ALLEGATO_PATH, SHEET_ALLEGATO)
-except Exception as e:
-    TaskDialog.Show('Errore', 'Non posso leggere Excel:\n' + str(e))
-    raise SystemExit
-
-#  poi usi cols_mappe e cols_allegato nella logica esistente 
 
 def build_param_values(map_cols, all_cols, codice_edificio, file_name):
     names = map_cols[1]   # colonna B
     rules = map_cols[2]   # colonna C
     # trova righe Allegato per codice edificio
     colF = all_cols[5]
-    rows = [i for i in range(1, len(colF)) if str(colF[i]).strip() == codice_edificio]
+    # _norm: xlrd legge i numeri come float (13037 -> 13037.0), senza
+    # normalizzazione il confronto con il codice dal nome file non matcha mai
+    rows = [i for i in range(1, len(colF)) if _norm(colF[i]) == codice_edificio]
     if not rows:
         raise Exception("Codice edificio '{}' non trovato in Allegato".format(codice_edificio))
     sel = rows[0]
@@ -91,7 +84,9 @@ def build_param_values(map_cols, all_cols, codice_edificio, file_name):
     if len(all_cols) > 9:
         colJ = all_cols[9]
         for i in rows:
-            if i < len(colJ) and colJ[i] and colJ[i] in file_name:
+            # str/_norm: se la cella J e' numerica, "float in str" solleva TypeError
+            cj = _norm(colJ[i]) if i < len(colJ) else ""
+            if cj and cj in file_name:
                 sel = i
                 break
 
@@ -151,22 +146,35 @@ elems = FilteredElementCollector(doc)\
 
 # Scrittura parametri
 skipped_params = set()
+written_params = set()
 updated = 0
 trans = Transaction(doc, 'Set Parametri Comuni')
 trans.Start()
-for el in elems:
-    for pname, pval in param_values.items():
-        prm = el.LookupParameter(pname)
-        if prm and not prm.IsReadOnly:
-            prm.Set(pval)
-            updated += 1
-        else:
-            skipped_params.add(pname)
-trans.Commit()
+try:
+    for el in elems:
+        for pname, pval in param_values.items():
+            prm = el.LookupParameter(pname)
+            if prm and not prm.IsReadOnly:
+                try:
+                    prm.Set(pval)
+                    updated += 1
+                    written_params.add(pname)
+                except:
+                    skipped_params.add(pname)
+            else:
+                skipped_params.add(pname)
+    trans.Commit()
+except:
+    if trans.GetStatus() == TransactionStatus.Started:
+        trans.RollBack()
+    raise
 
-# Output
-if skipped_params:
-    msg = 'Parametri con nome errato su Excel:' + '\n' + '\n'.join(sorted(skipped_params))
+# Output: segnala solo i parametri MAI scritti su nessun elemento
+# (prima finivano in lista anche nomi validi solo perche' assenti su
+# alcune categorie, pur essendo stati scritti sulle altre)
+never_written = skipped_params - written_params
+if never_written:
+    msg = 'Parametri mai scritti (nome errato su Excel o assenti nel modello):' + '\n' + '\n'.join(sorted(never_written))
 else:
     msg = 'Tutti i parametri sono stati aggiornati.'
 TaskDialog.Show('Completato', msg)
