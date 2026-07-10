@@ -11,7 +11,14 @@ import clr, os, re, xlrd, csv
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB import TransactionStatus
 from System.Collections.Generic import List
-from Autodesk.Revit.DB import StorageType, UnitTypeId
+from Autodesk.Revit.DB import StorageType
+# Sotto IronPython UnitTypeId a volte non si importa: se fallisce qui a
+# livello modulo lo script muore subito. Con None i punti d'uso (gia' in
+# try/except) ripiegano su 304.8 / DisplayUnitType.
+try:
+    from Autodesk.Revit.DB import UnitTypeId
+except:
+    UnitTypeId = None
 
 # ---------- Helper Excel/CSV ----------
 def col_letter_to_index(letter):
@@ -31,6 +38,39 @@ def format_cell_value(cell):
     if re.match(r'^-?\d+\.0$', s):
         return s[:-2]
     return s
+
+def _detect_ci_report_is_new(ws):
+    """
+    Rileva il formato del foglio Report del CI (vecchio vs nuovo, come in
+    Full Mapping Batch): cerca 'Codice SAP' in colonna B nelle prime 10 righe;
+    nuovo formato se nell'header la colonna AJ(35) e' 'Lista'.
+    """
+    header_row = -1
+    for r in range(0, min(10, ws.nrows)):
+        try:
+            v = format_cell_value(ws.cell(r, 1))
+        except:
+            v = ""
+        if v and "codice sap" in str(v).strip().lower():
+            header_row = r
+            break
+    if header_row < 0:
+        return False
+    try:
+        h_aj = format_cell_value(ws.cell(header_row, 35))
+        return bool(h_aj) and str(h_aj).strip().lower() == "lista"
+    except:
+        return False
+
+def _xlate_old_col_idx(idx, is_new_format):
+    """
+    Le regole Excel usano gli indici del CI VECCHIO; nel nuovo formato la
+    colonna 'Lista' e' inserita all'indice 35, quindi tutti gli indici >= 35
+    slittano di +1.
+    """
+    if is_new_format and idx is not None and idx >= 35:
+        return idx + 1
+    return idx
 
 def get_param_as_string(prm):
     if prm is None:
@@ -333,7 +373,17 @@ for i in range(1, ws_map.nrows):
 
 # Prepara dati per W
 data_by_sheet = {}
+index_by_sheet = {}       # sheet -> {SAP: prima riga} (lookup O(1) caso generale)
+report_rows_by_sap = {}   # solo Report: SAP -> [tutte le sue righe] (caso CA/EE)
 sap_col_map   = {"Report":1, "Consistenza Impiantistica":col_letter_to_index('N')}
+
+# Rileva formato CI Report (vecchio/nuovo) per traslare gli indici colonna
+ci_report_is_new = False
+try:
+    ci_report_is_new = _detect_ci_report_is_new(wb_ci.sheet_by_name("Report"))
+except:
+    ci_report_is_new = False
+
 for rule in param_rules:
     if rule[0] == "W":
         sheet = rule[3]
@@ -347,6 +397,14 @@ for rule in param_rules:
                     continue
                 rows.append((code, [format_cell_value(ws.cell(r, c)) for c in range(ws.ncols)]))
             data_by_sheet[sheet] = rows
+            first_by_code = {}
+            for code, rv in rows:
+                if code not in first_by_code:
+                    first_by_code[code] = rv
+            index_by_sheet[sheet] = first_by_code
+            if sheet == "Report":
+                for code, rv in rows:
+                    report_rows_by_sap.setdefault(code, []).append(rv)
 
 # Carica Allegato3 per J (lazy in uso)
 allegato_data = None
@@ -458,45 +516,41 @@ try:
             
             if typ == "W":
                 _, _, prefix, sheet, idx = rule
-                rows = data_by_sheet.get(sheet, [])
                 val = None
 
                 # --- Caso speciale: foglio "Report" + colonna EE ---
                 # Qui lo stesso SAP ha più righe, una per ogni parametro CAxxx.
                 # Serve trovare la riga con SAP uguale E DZ che identifica il parametro (prefix = "CA002", "CA008", ...).
-                # Se DZ è tutta vuota -> match su EA e valore da EG
+                # Se DZ è tutta vuota -> match su EA e valore da EG.
+                # NB: le regole sono in convenzione CI VECCHIO; se il CI e' nuovo
+                # gli indici >= 35 vanno traslati di +1 (_xlate_old_col_idx).
                 if sheet == "Report" and idx == col_letter_to_index('EE'):
-                    dz = col_letter_to_index('DZ')
-                    ea = col_letter_to_index('EA')
-                    eg = col_letter_to_index('EG')
+                    dz = _xlate_old_col_idx(col_letter_to_index('DZ'), ci_report_is_new)
+                    ea = _xlate_old_col_idx(col_letter_to_index('EA'), ci_report_is_new)
+                    eg = _xlate_old_col_idx(col_letter_to_index('EG'), ci_report_is_new)
+                    ee = _xlate_old_col_idx(idx, ci_report_is_new)
+                    sap_rows = report_rows_by_sap.get(sap_val, [])
 
                     # verifica se in DZ esiste almeno un valore non vuoto (per le righe del SAP corrente)
                     dz_has_any = False
-                    for code, rv in rows:
-                        if code != sap_val:
-                            continue
-                        dz_val_chk = (rv[dz] if dz < len(rv) else '')
-                        if str(dz_val_chk).strip() != '':
+                    for rv in sap_rows:
+                        if str(rv[dz] if dz < len(rv) else '').strip() != '':
                             dz_has_any = True
                             break
 
                     if dz_has_any:
                         # Comportamento attuale: match su DZ e valore da EE
-                        for code, rv in rows:
-                            if code != sap_val:
-                                continue
+                        for rv in sap_rows:
                             dz_val = str(rv[dz] if dz < len(rv) else '').upper().strip()
                             if dz_val.startswith(prefix):
-                                if idx < len(rv):
-                                    candidate = rv[idx]
+                                if ee < len(rv):
+                                    candidate = rv[ee]
                                     if candidate is not None and str(candidate).strip() != "":
                                         val = candidate
                                 break
                     else:
                         # Eccezione: DZ tutta vuota -> match su EA e valore da EG
-                        for code, rv in rows:
-                            if code != sap_val:
-                                continue
+                        for rv in sap_rows:
                             ea_val = str(rv[ea] if ea < len(rv) else '').upper().strip()
                             if ea_val.startswith(prefix):
                                 if eg < len(rv):
@@ -505,15 +559,14 @@ try:
                                         val = candidate
                                 break
 
-                # --- Caso generale: match per SAP (1 riga per SAP) ---
+                # --- Caso generale: match per SAP (1 riga per SAP, lookup indicizzato) ---
                 else:
-                    for code, rv in rows:
-                        if code == sap_val:
-                            if idx < len(rv):
-                                candidate = rv[idx]
-                                if candidate is not None and str(candidate).strip() != "":
-                                    val = candidate
-                            break
+                    eff_idx = _xlate_old_col_idx(idx, ci_report_is_new) if sheet == "Report" else idx
+                    rv = index_by_sheet.get(sheet, {}).get(sap_val)
+                    if rv is not None and eff_idx < len(rv):
+                        candidate = rv[eff_idx]
+                        if candidate is not None and str(candidate).strip() != "":
+                            val = candidate
 
 
             elif typ == "C":
